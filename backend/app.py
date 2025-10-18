@@ -1,6 +1,6 @@
 # backend/app.py
 import os, time, uuid
-from typing import List, Optional
+from typing import List, Optional, Dict
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, constr
@@ -11,12 +11,12 @@ APP_VERSION = "0.2.0"
 
 # ---------- OpenAI client ----------
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_TEXT_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")         # good + cheap
-OPENAI_IMAGE_MODEL = os.getenv("IMAGE_MODEL", "gpt-image-1")         # DALLE-style
+OPENAI_TEXT_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+OPENAI_IMAGE_MODEL = os.getenv("IMAGE_MODEL", "gpt-image-1")
 
+client: Optional[OpenAI]
 if not OPENAI_API_KEY:
-    # We still boot so /health works, but story endpoints will 500 with a clear message.
-    client: Optional[OpenAI] = None
+    client = None  # /health still works; story endpoints will 500 with clear message
 else:
     client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -42,6 +42,13 @@ class StoryResponse(BaseModel):
     title: str
     chapters: List[str]
 
+# NEW: brief item for listing
+class StoryItem(BaseModel):
+    id: str
+    title: str
+    chapters_count: int
+    created_at: int  # unix seconds
+
 class ImageRequest(BaseModel):
     prompt: constr(strip_whitespace=True, min_length=3)
     aspect: constr(strip_whitespace=True) = Field("square", description="square|portrait|landscape")
@@ -59,12 +66,15 @@ class BookResponse(BaseModel):
     chapters: List[str]
     image_urls: Optional[List[str]] = None
 
+# ---------- In-memory store (simple) ----------
+# id -> {"title": str, "chapters": List[str], "created_at": int}
+STORIES: Dict[str, Dict] = {}
+
 # ---------- Helpers ----------
 def _title_from_prompt(prompt: str, age_range: str) -> str:
     return f"{prompt.strip().capitalize()} (A {age_range} Story)"
 
 def _chapter_prompts(base_prompt: str, style: str, chapters: int) -> List[str]:
-    """Make compact prompts so we stay fast + cheap."""
     return [
         f"Write Chapter {i+1} of a children's story.\n"
         f"Base premise: {base_prompt}\n"
@@ -97,8 +107,30 @@ def root():
 
 @app.get("/health", tags=["Root"])
 def health():
-    # fast response is important for Railway health checks
     return {"ok": True, "ts": int(time.time())}
+
+# NEW: list stories (fixes 405)
+@app.get("/stories", response_model=List[StoryItem], tags=["Stories"])
+def list_stories():
+    items: List[StoryItem] = []
+    for i, data in STORIES.items():
+        items.append(StoryItem(
+            id=i,
+            title=data["title"],
+            chapters_count=len(data["chapters"]),
+            created_at=data["created_at"],
+        ))
+    # newest first
+    items.sort(key=lambda x: x.created_at, reverse=True)
+    return items
+
+# NEW: get one story by id
+@app.get("/stories/{story_id}", response_model=StoryResponse, tags=["Stories"])
+def get_story(story_id: str):
+    data = STORIES.get(story_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="Not found")
+    return StoryResponse(title=data["title"], chapters=data["chapters"])
 
 @app.post("/stories", response_model=StoryResponse, tags=["Stories"])
 def generate_story(req: StoryRequest):
@@ -109,7 +141,6 @@ def generate_story(req: StoryRequest):
 
     chapters: List[str] = []
     try:
-        # One request per chapter keeps latency bounded and makes retries simple
         for cp in chapter_prompts:
             resp = client.chat.completions.create(
                 model=OPENAI_TEXT_MODEL,
@@ -123,11 +154,14 @@ def generate_story(req: StoryRequest):
                 ],
             )
             text = (resp.choices[0].message.content or "").strip()
-            if not text:
-                text = "…"  # never return empty
-            chapters.append(text)
+            chapters.append(text if text else "…")
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"LLM error: {e}")
+        # Return 500 (so the proxy doesn't map it as a 502 Bad Gateway)
+        raise HTTPException(status_code=500, detail=f"LLM error: {e}")
+
+    # NEW: persist so GET endpoints work
+    story_id = str(uuid.uuid4())
+    STORIES[story_id] = {"title": title, "chapters": chapters, "created_at": int(time.time())}
 
     return StoryResponse(title=title, chapters=chapters)
 
@@ -145,7 +179,7 @@ def generate_image(req: ImageRequest):
         url = img.data[0].url
         return ImageResponse(image_url=url)
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Image error: {e}")
+        raise HTTPException(status_code=500, detail=f"Image error: {e}")
 
 @app.post("/books", response_model=BookResponse, tags=["Books"])
 def generate_book(req: BookRequest):
