@@ -10,13 +10,13 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 SERVICE_NAME = "AI StoryForge"
-APP_VERSION = "0.3.5"
+APP_VERSION = "0.3.6"
 
 # ---------- OpenAI client ----------
 OPENAI_API_KEY     = os.getenv("OPENAI_API_KEY", "")
-OPENAI_ORG_ID      = os.getenv("OPENAI_ORG_ID", "")              # optional but recommended
+OPENAI_ORG_ID      = os.getenv("OPENAI_ORG_ID", "")
 OPENAI_TEXT_MODEL  = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-OPENAI_IMAGE_MODEL = os.getenv("IMAGE_MODEL", "gpt-image-1")     # gpt-image-1 returns b64_json only
+OPENAI_IMAGE_MODEL = os.getenv("IMAGE_MODEL", "gpt-image-1")
 
 client: Optional[OpenAI]
 if not OPENAI_API_KEY:
@@ -39,9 +39,14 @@ app.add_middleware(
 frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
 app.mount("/static", StaticFiles(directory=frontend_dir), name="static")
 
-# Persisted files under backend/data -> served at /media/...
-DATA_ROOT = Path(__file__).parent / "data"
+# ✅ Use mounted /data if present, otherwise fall back to local
+DEFAULT_MEDIA = Path(__file__).parent / "data"
+DATA_ROOT = Path(os.getenv("MEDIA_ROOT", "/data"))
+if not DATA_ROOT.exists():
+    DATA_ROOT = DEFAULT_MEDIA
 DATA_ROOT.mkdir(parents=True, exist_ok=True)
+
+# Serve persisted files under /media
 app.mount("/media", StaticFiles(directory=DATA_ROOT), name="media")
 
 @app.get("/ui")
@@ -50,10 +55,10 @@ def serve_frontend():
 
 # ---------- Schemas ----------
 class StoryRequest(BaseModel):
-    prompt: constr(strip_whitespace=True, min_length=3) = Field(..., example="A shy firefly who learns to shine with new friends")
-    age_range: constr(strip_whitespace=True) = Field("4-7", example="4-7")
-    style: constr(strip_whitespace=True) = Field("bedtime, friendly", example="bedtime, friendly")
-    chapters: int = Field(1, ge=1, le=10, description="Number of chapters")
+    prompt: constr(strip_whitespace=True, min_length=3)
+    age_range: constr(strip_whitespace=True) = Field("4-7")
+    style: constr(strip_whitespace=True) = Field("bedtime, friendly")
+    chapters: int = Field(1, ge=1, le=10)
 
 class StoryResponse(BaseModel):
     title: str
@@ -63,14 +68,14 @@ class StoryItem(BaseModel):
     id: str
     title: str
     chapters_count: int
-    created_at: int  # unix seconds
+    created_at: int
 
 class ImageRequest(BaseModel):
     prompt: constr(strip_whitespace=True, min_length=3)
     aspect: constr(strip_whitespace=True) = Field("square", description="square|portrait|landscape")
 
 class ImageResponse(BaseModel):
-    image_url: str  # /media/... URL (PNG or SVG)
+    image_url: str
 
 class BookRequest(BaseModel):
     story: StoryRequest
@@ -108,7 +113,6 @@ def load_stories():
         print(f"⚠️ Failed to load stories: {e}")
         STORIES = {}
 
-# Load on startup
 load_stories()
 
 # ---------- Helpers ----------
@@ -131,12 +135,11 @@ def _image_prompt_from_chapter(title: str, chapter_text: str, style_hint: str) -
         f"Style: {style_hint}. Ultra kid-friendly, bright, cozy, no text overlay."
     )
 
-# Use ONLY sizes supported by gpt-image-1 to avoid 400s
 def _image_size(aspect: str) -> str:
     a = (aspect or "square").lower()
-    if a.startswith("port"): return "1024x1536"   # portrait
-    if a.startswith("land"): return "1536x1024"   # landscape
-    return "1024x1024"                            # square
+    if a.startswith("port"): return "1024x1536"
+    if a.startswith("land"): return "1536x1024"
+    return "1024x1024"
 
 def _image_size_px(aspect: str) -> Tuple[int, int]:
     a = (aspect or "square").lower()
@@ -165,11 +168,6 @@ def _placeholder_svg(title: str, w: int, h: int) -> str:
 </svg>"""
 
 def _gen_image_to_file(prompt: str, aspect: str, dest_stem: Path) -> Path:
-    """
-    Minimal, spec-correct generator for gpt-image-1 (b64 only).
-    If the Images API isn't available for your org yet, falls back to SVG.
-    Always returns an absolute path to a saved file (PNG or SVG).
-    """
     w, h = _image_size_px(aspect)
     dest_stem.parent.mkdir(parents=True, exist_ok=True)
 
@@ -178,17 +176,16 @@ def _gen_image_to_file(prompt: str, aspect: str, dest_stem: Path) -> Path:
             raise RuntimeError("Images API not configured")
 
         resp = client.images.generate(
-            model=OPENAI_IMAGE_MODEL,      # defaults to gpt-image-1
+            model=OPENAI_IMAGE_MODEL,
             prompt=prompt,
-            size=_image_size(aspect),      # 1024x1024 | 1024x1536 | 1536x1024
-            quality="high",                # gpt-image-1 supports auto/high/medium/low
-            # IMPORTANT: no response_format here; gpt-image-1 returns b64_json by default
+            size=_image_size(aspect),
+            quality="high",
         )
         datum = resp.data[0] if getattr(resp, "data", None) else None
         b64 = getattr(datum, "b64_json", None)
 
         if not isinstance(b64, str) or not b64.strip():
-            raise ValueError("No b64_json in image response (gpt-image-1 returns base64)")
+            raise ValueError("No b64_json in image response")
 
         out = dest_stem.with_suffix(".png")
         with open(out, "wb") as f:
@@ -238,11 +235,10 @@ def get_story(story_id: str):
 @app.post("/stories", response_model=StoryResponse, tags=["Stories"])
 def generate_story(req: StoryRequest):
     _require_client()
-
     title = _title_from_prompt(req.prompt, req.age_range)
     chapter_prompts = _chapter_prompts(req.prompt, req.style, req.chapters)
-
     chapters: List[str] = []
+
     try:
         for cp in chapter_prompts:
             resp = client.chat.completions.create(
@@ -287,8 +283,8 @@ def generate_image(req: ImageRequest):
 @app.post("/books", response_model=BookResponse, tags=["Books"])
 def generate_book(req: BookRequest):
     story = generate_story(req.story)
-
     urls: Optional[List[str]] = None
+
     if req.images:
         book_id = str(uuid.uuid4())
         book_dir = DATA_ROOT / "books" / book_id
@@ -299,8 +295,19 @@ def generate_book(req: BookRequest):
             abs_path = _gen_image_to_file(iprompt, "square", dest_stem)
             rel = Path(abs_path).relative_to(DATA_ROOT)
             urls.append(f"/media/{rel.as_posix()}")
+
         final_id = book_id
     else:
         final_id = str(uuid.uuid4())
 
     return BookResponse(id=final_id, title=story.title, chapters=story.chapters, image_urls=urls)
+
+# ---- Debug helper ----
+@app.get("/debug/media")
+def debug_media():
+    out = []
+    for p in DATA_ROOT.rglob("*"):
+        if p.is_file():
+            rel = p.relative_to(DATA_ROOT).as_posix()
+            out.append({"url": f"/media/{rel}", "bytes": p.stat().st_size})
+    return {"root": str(DATA_ROOT), "count": len(out), "items": out[:200]}
