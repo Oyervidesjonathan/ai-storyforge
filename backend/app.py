@@ -167,6 +167,8 @@ def _gen_image_to_file(prompt: str, aspect: str, dest_stem: Path) -> Path:
     Try to generate PNG via OpenAI image API (download from returned URL);
     on failure, save a local SVG placeholder.
     """
+    from urllib.request import urlretrieve  # local import to avoid handler quirks
+
     w, h = _image_size_px(aspect)
     dest_stem.parent.mkdir(parents=True, exist_ok=True)
 
@@ -175,20 +177,22 @@ def _gen_image_to_file(prompt: str, aspect: str, dest_stem: Path) -> Path:
             resp = client.images.generate(
                 model=OPENAI_IMAGE_MODEL,
                 prompt=prompt,
-                size=_image_size(aspect),
+                size=_image_size(aspect),  # e.g., "1024x1024"
                 quality="high"
             )
             url = resp.data[0].url
             out = dest_stem.with_suffix(".png")
-            with urllib.request.urlopen(url, timeout=60) as r, open(out, "wb") as f:
-                f.write(r.read())
+            # simpler + robust download
+            urlretrieve(url, out)  # writes file to disk
             return out
         except Exception as e:
             print(f"⚠️ Image API failed, using placeholder: {e}")
 
+    # Fallback: SVG placeholder (always works)
     out = dest_stem.with_suffix(".svg")
     out.write_text(_placeholder_svg(prompt, w, h), encoding="utf-8")
     return out
+
 
 def _require_client():
     if client is None:
