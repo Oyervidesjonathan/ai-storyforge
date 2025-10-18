@@ -35,6 +35,15 @@ app.add_middleware(
     allow_origins=["*"], allow_methods=["*"], allow_headers=["*"], allow_credentials=True,
 )
 
+# ---------- Serve static frontend ----------
+frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
+app.mount("/static", StaticFiles(directory=frontend_dir), name="static")
+
+@app.get("/ui")
+def serve_frontend():
+    return FileResponse(os.path.join(frontend_dir, "index.html"))
+
+
 # ---------- Schemas ----------
 class StoryRequest(BaseModel):
     prompt: constr(strip_whitespace=True, min_length=3) = Field(..., example="A shy firefly who learns to shine with new friends")
