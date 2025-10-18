@@ -8,23 +8,47 @@
     body { font-family: Arial, sans-serif; background: #faf6f2; color: #333; padding: 20px; }
     h1 { text-align: center; }
     .story-list { display: flex; flex-direction: column; gap: 10px; margin-top: 20px; }
-    .story-card { padding: 12px; background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer; }
+    .story-card { padding: 12px; background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer; position: relative; }
     .story-card:hover { background: #f1ece7; }
     .story-title { font-size: 1.2em; margin-bottom: 4px; }
     .story-meta { font-size: 0.9em; color: #666; }
     .story-view { margin-top: 20px; padding: 20px; background: #fff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
     .back-btn { margin-top: 15px; background: #333; color: white; padding: 8px 12px; border: none; border-radius: 6px; cursor: pointer; }
     .back-btn:hover { background: #555; }
+    .delete-btn { position: absolute; top: 10px; right: 10px; background: none; border: none; cursor: pointer; font-size: 1.2em; }
+    .delete-btn:hover { color: red; }
+    .create-form { background: #fff; padding: 20px; margin-top: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+    .create-form input, .create-form textarea { width: 100%; margin: 5px 0; padding: 8px; font-size: 1em; }
+    .create-form button { margin-top: 10px; background: #333; color: white; padding: 8px 12px; border: none; border-radius: 6px; cursor: pointer; }
+    .create-form button:hover { background: #555; }
   </style>
 </head>
 <body>
   <h1>📚 AI StoryForge</h1>
 
+  <!-- 🧾 Create Story Form -->
+  <div class="create-form">
+    <h2>Create a New Story</h2>
+    <label>Prompt:</label>
+    <textarea id="new-prompt" placeholder="e.g. A shy dragon who learns to fly"></textarea>
+
+    <label>Age Range:</label>
+    <input id="new-age" type="text" value="4-7">
+
+    <label>Style:</label>
+    <input id="new-style" type="text" value="bedtime, friendly">
+
+    <label>Chapters:</label>
+    <input id="new-chapters" type="number" value="1" min="1" max="10">
+
+    <button onclick="createStory()">➕ Generate Story</button>
+  </div>
+
   <div id="story-list" class="story-list"></div>
   <div id="story-view" class="story-view" style="display:none;"></div>
 
   <script>
-    const API_BASE = window.location.origin; // auto-uses your Railway domain
+    const API_BASE = window.location.origin;
 
     async function loadStories() {
       const res = await fetch(`${API_BASE}/stories`);
@@ -34,17 +58,37 @@
       list.innerHTML = '';
 
       if (stories.length === 0) {
-        list.innerHTML = '<p>No stories yet. Try creating one in /docs 👀</p>';
+        list.innerHTML = '<p>No stories yet. Create one above 👆</p>';
         return;
       }
 
       stories.forEach(story => {
         const card = document.createElement('div');
         card.className = 'story-card';
-        card.innerHTML = `
-          <div class="story-title">${story.title}</div>
-          <div class="story-meta">${story.chapters_count} chapter(s)</div>
-        `;
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.textContent = '🗑️';
+        deleteBtn.className = 'delete-btn';
+        deleteBtn.onclick = async (e) => {
+          e.stopPropagation();
+          if (confirm(`Delete "${story.title}"?`)) {
+            const res = await fetch(`${API_BASE}/stories/${story.id}`, { method: 'DELETE' });
+            if (res.ok) loadStories();
+            else alert('Failed to delete story.');
+          }
+        };
+
+        const titleDiv = document.createElement('div');
+        titleDiv.className = 'story-title';
+        titleDiv.textContent = story.title;
+
+        const metaDiv = document.createElement('div');
+        metaDiv.className = 'story-meta';
+        metaDiv.textContent = `${story.chapters_count} chapter(s)`;
+
+        card.appendChild(deleteBtn);
+        card.appendChild(titleDiv);
+        card.appendChild(metaDiv);
         card.onclick = () => viewStory(story.id);
         list.appendChild(card);
       });
@@ -63,11 +107,40 @@
       `;
 
       document.getElementById('story-list').style.display = 'none';
+      document.querySelector('.create-form').style.display = 'none';
     }
 
     function backToList() {
       document.getElementById('story-list').style.display = 'flex';
       document.getElementById('story-view').style.display = 'none';
+      document.querySelector('.create-form').style.display = 'block';
+    }
+
+    async function createStory() {
+      const prompt = document.getElementById('new-prompt').value.trim();
+      const age = document.getElementById('new-age').value.trim();
+      const style = document.getElementById('new-style').value.trim();
+      const chapters = parseInt(document.getElementById('new-chapters').value);
+
+      if (!prompt) {
+        alert('Please enter a prompt.');
+        return;
+      }
+
+      const payload = { prompt, age_range: age, style, chapters };
+
+      const res = await fetch(`${API_BASE}/stories`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (res.ok) {
+        await loadStories();
+        document.getElementById('new-prompt').value = '';
+      } else {
+        alert('Failed to generate story.');
+      }
     }
 
     loadStories();
