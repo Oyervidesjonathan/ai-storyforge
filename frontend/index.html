@@ -7,6 +7,8 @@
   <style>
     body { font-family: Arial, sans-serif; background: #faf6f2; color: #333; padding: 20px; }
     h1 { text-align: center; }
+
+    /* ===== Your existing Stories styles (unchanged) ===== */
     .story-list { display: flex; flex-direction: column; gap: 10px; margin-top: 20px; }
     .story-card { padding: 12px; background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer; position: relative; }
     .story-card:hover { background: #f1ece7; }
@@ -21,12 +23,23 @@
     .create-form input, .create-form textarea { width: 100%; margin: 5px 0; padding: 8px; font-size: 1em; }
     .create-form button { margin-top: 10px; background: #333; color: white; padding: 8px 12px; border: none; border-radius: 6px; cursor: pointer; }
     .create-form button:hover { background: #555; }
+
+    /* ===== New sections: Book + Media (added) ===== */
+    .card { background:#fff; padding:20px; margin-top:20px; border-radius:8px; box-shadow:0 2px 4px rgba(0,0,0,0.1); }
+    .row { display:flex; gap:10px; flex-wrap:wrap; }
+    .row > div { flex: 1 1 240px; min-width: 220px; }
+    .muted { color:#666; font-size: 0.9em; }
+    .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap:12px; margin-top: 10px; }
+    .thumb { border:1px solid #eee; border-radius:8px; overflow:hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.08); background:#fff; }
+    .thumb img { display:block; width:100%; height:auto; }
+    .hr { height:1px; background:#eee; margin:16px 0; }
+    .empty { color:#666; text-align:center; padding:18px 8px; }
   </style>
 </head>
 <body>
   <h1>📚 AI StoryForge</h1>
 
-  <!-- 🧾 Create Story Form -->
+  <!-- 🧾 Create Story Form (UNCHANGED) -->
   <div class="create-form">
     <h2>Create a New Story</h2>
     <label>Prompt:</label>
@@ -44,12 +57,51 @@
     <button onclick="createStory()">➕ Generate Story</button>
   </div>
 
+  <!-- Stories list + viewer (UNCHANGED) -->
   <div id="story-list" class="story-list"></div>
   <div id="story-view" class="story-view" style="display:none;"></div>
+
+  <!-- ===== NEW: Create Illustrated Book ===== -->
+  <div class="card" id="book-card">
+    <h2>Create an Illustrated Book</h2>
+    <p class="muted">Generates a new story and one illustration per chapter. Images are saved and served from <code>/media</code>.</p>
+    <div class="row">
+      <div>
+        <label>Prompt</label>
+        <textarea id="b-prompt" placeholder="A friendly dragon under a starry sky, picture-book style"></textarea>
+      </div>
+      <div>
+        <label>Age range</label>
+        <input id="b-age" type="text" value="4-7" />
+      </div>
+      <div>
+        <label>Style (text & images)</label>
+        <input id="b-style" type="text" value="bedtime, watercolor, cozy, no text on image" />
+      </div>
+      <div style="flex:0 0 140px; min-width:140px;">
+        <label>Chapters</label>
+        <input id="b-chapters" type="number" min="1" max="10" value="3" />
+      </div>
+    </div>
+    <button id="btn-book">🎨 Generate Book</button>
+    <span id="b-status" class="muted"></span>
+
+    <div id="book-out" style="margin-top:14px;"></div>
+  </div>
+
+  <!-- ===== NEW: Media Gallery ===== -->
+  <div class="card" id="media-card">
+    <h2>Media Gallery</h2>
+    <p class="muted">Listing from <code>/debug/media</code>. Click a thumbnail to open the file via <code>/media/…</code>.</p>
+    <button id="btn-media-refresh">🔄 Refresh</button>
+    <div id="media-list" class="grid"></div>
+    <div id="media-empty" class="empty" style="display:none;">No media yet.</div>
+  </div>
 
   <script>
     const API_BASE = window.location.origin;
 
+    /* ===== YOUR EXISTING STORY LOGIC (UNCHANGED) ===== */
     async function loadStories() {
       const res = await fetch(`${API_BASE}/stories`);
       const stories = await res.json();
@@ -143,7 +195,95 @@
       }
     }
 
+    /* ===== NEW: BOOK GENERATION ===== */
+    document.getElementById('btn-book').addEventListener('click', async () => {
+      const prompt = document.getElementById('b-prompt').value.trim();
+      const age = document.getElementById('b-age').value.trim() || '4-7';
+      const style = document.getElementById('b-style').value.trim() || 'bedtime, watercolor, cozy';
+      const chapters = Math.max(1, Math.min(10, parseInt(document.getElementById('b-chapters').value || '3', 10)));
+
+      if (!prompt) { alert('Please add a prompt.'); return; }
+
+      const status = document.getElementById('b-status');
+      const out = document.getElementById('book-out');
+      out.innerHTML = '';
+      status.textContent = 'Generating book (text + images)…';
+
+      try {
+        const res = await fetch(`${API_BASE}/books`, {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ story: { prompt, age_range: age, style, chapters }, images: true })
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(()=>({detail:res.statusText}));
+          throw new Error(err.detail || 'Book failed');
+        }
+        const data = await res.json();
+        const imgs = Array.isArray(data.image_urls) ? data.image_urls : [];
+        const imgGrid = imgs.length
+          ? `<div class="grid">${imgs.map(u => `
+              <a class="thumb" href="${u}" target="_blank" rel="noopener">
+                <img src="${u}" alt="page image"/>
+              </a>`).join('')}</div>`
+          : `<div class="empty">No images returned.</div>`;
+
+        out.innerHTML = `
+          <div class="card">
+            <h3>${data.title}</h3>
+            ${data.chapters.map((c,i)=>`<div class="chap"><h4>Chapter ${i+1}</h4><p>${c}</p></div>`).join('')}
+            <div class="hr"></div>
+            <h3>Illustrations</h3>
+            ${imgGrid}
+          </div>
+        `;
+        status.textContent = 'Done.';
+        loadMedia();      // update gallery
+        loadStories();    // story saved by backend
+      } catch (e) {
+        status.textContent = '';
+        alert(e.message || 'Book failed.');
+        console.error(e);
+      }
+    });
+
+    /* ===== NEW: MEDIA GALLERY ===== */
+    async function loadMedia() {
+      const grid = document.getElementById('media-list');
+      const empty = document.getElementById('media-empty');
+      grid.innerHTML = '';
+      empty.style.display = 'none';
+      try {
+        const res = await fetch(`${API_BASE}/debug/media`);
+        const data = await res.json();
+        const items = (data && Array.isArray(data.items)) ? data.items : [];
+        if (items.length === 0) {
+          empty.style.display = 'block';
+          return;
+        }
+        for (const it of items) {
+          const a = document.createElement('a');
+          a.className = 'thumb';
+          a.href = it.url;
+          a.target = '_blank';
+          a.rel = 'noopener';
+          const img = document.createElement('img');
+          img.src = it.url;
+          img.alt = it.url.split('/').pop();
+          a.appendChild(img);
+          grid.appendChild(a);
+        }
+      } catch (e) {
+        empty.style.display = 'block';
+        empty.textContent = 'Could not list media.';
+        console.error(e);
+      }
+    }
+    document.getElementById('btn-media-refresh').addEventListener('click', loadMedia);
+
+    // initial loads
     loadStories();
+    loadMedia();
   </script>
 </body>
 </html>
