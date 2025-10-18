@@ -8,7 +8,7 @@
     body { font-family: Arial, sans-serif; background: #faf6f2; color: #333; padding: 20px; }
     h1 { text-align: center; }
 
-    /* ===== Your existing Stories styles (unchanged) ===== */
+    /* ===== Stories styles (unchanged) ===== */
     .story-list { display: flex; flex-direction: column; gap: 10px; margin-top: 20px; }
     .story-card { padding: 12px; background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer; position: relative; }
     .story-card:hover { background: #f1ece7; }
@@ -24,16 +24,42 @@
     .create-form button { margin-top: 10px; background: #333; color: white; padding: 8px 12px; border: none; border-radius: 6px; cursor: pointer; }
     .create-form button:hover { background: #555; }
 
-    /* ===== New sections: Book + Media (added) ===== */
+    /* ===== Cards + media ===== */
     .card { background:#fff; padding:20px; margin-top:20px; border-radius:8px; box-shadow:0 2px 4px rgba(0,0,0,0.1); }
-    .row { display:flex; gap:10px; flex-wrap:wrap; }
-    .row > div { flex: 1 1 240px; min-width: 220px; }
     .muted { color:#666; font-size: 0.9em; }
     .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap:12px; margin-top: 10px; }
     .thumb { border:1px solid #eee; border-radius:8px; overflow:hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.08); background:#fff; }
     .thumb img { display:block; width:100%; height:auto; }
     .hr { height:1px; background:#eee; margin:16px 0; }
     .empty { color:#666; text-align:center; padding:18px 8px; }
+
+    /* ===== New: tidy book-form grid ===== */
+    .book-form{
+      display:grid;
+      grid-template-columns: 1.6fr 0.8fr 1fr 120px; /* prompt | age | style | chapters */
+      gap:12px 16px;
+      align-items:end;
+      margin-top:10px;
+    }
+    .book-form .field label{
+      display:block;
+      font-weight:600;
+      margin-bottom:4px;
+    }
+    .book-form textarea,
+    .book-form input{
+      width:100%;
+      box-sizing:border-box;
+      font-size:1em;
+      padding:8px;
+    }
+    #b-prompt{ min-height:56px; resize:vertical; }
+    .book-actions{ grid-column:1 / -1; display:flex; align-items:center; gap:12px; margin-top:6px; }
+
+    @media (max-width: 860px){
+      .book-form{ grid-template-columns: 1fr; }
+      .book-actions{ grid-column: 1 / -1; }
+    }
   </style>
 </head>
 <body>
@@ -61,35 +87,42 @@
   <div id="story-list" class="story-list"></div>
   <div id="story-view" class="story-view" style="display:none;"></div>
 
-  <!-- ===== NEW: Create Illustrated Book ===== -->
+  <!-- ===== Create Illustrated Book (aligned) ===== -->
   <div class="card" id="book-card">
     <h2>Create an Illustrated Book</h2>
     <p class="muted">Generates a new story and one illustration per chapter. Images are saved and served from <code>/media</code>.</p>
-    <div class="row">
-      <div>
-        <label>Prompt</label>
+
+    <div class="book-form">
+      <div class="field" style="grid-column:auto;">
+        <label for="b-prompt">Prompt</label>
         <textarea id="b-prompt" placeholder="A friendly dragon under a starry sky, picture-book style"></textarea>
       </div>
-      <div>
-        <label>Age range</label>
+
+      <div class="field">
+        <label for="b-age">Age range</label>
         <input id="b-age" type="text" value="4-7" />
       </div>
-      <div>
-        <label>Style (text & images)</label>
+
+      <div class="field">
+        <label for="b-style">Style (text & images)</label>
         <input id="b-style" type="text" value="bedtime, watercolor, cozy, no text on image" />
       </div>
-      <div style="flex:0 0 140px; min-width:140px;">
-        <label>Chapters</label>
+
+      <div class="field">
+        <label for="b-chapters">Chapters</label>
         <input id="b-chapters" type="number" min="1" max="10" value="3" />
       </div>
+
+      <div class="book-actions">
+        <button id="btn-book">🎨 Generate Book</button>
+        <span id="b-status" class="muted"></span>
+      </div>
     </div>
-    <button id="btn-book">🎨 Generate Book</button>
-    <span id="b-status" class="muted"></span>
 
     <div id="book-out" style="margin-top:14px;"></div>
   </div>
 
-  <!-- ===== NEW: Media Gallery ===== -->
+  <!-- ===== Media Gallery ===== -->
   <div class="card" id="media-card">
     <h2>Media Gallery</h2>
     <p class="muted">Listing from <code>/debug/media</code>. Click a thumbnail to open the file via <code>/media/…</code>.</p>
@@ -101,7 +134,7 @@
   <script>
     const API_BASE = window.location.origin;
 
-    /* ===== YOUR EXISTING STORY LOGIC (UNCHANGED) ===== */
+    /* ===== Stories logic (unchanged) ===== */
     async function loadStories() {
       const res = await fetch(`${API_BASE}/stories`);
       const stories = await res.json();
@@ -195,7 +228,7 @@
       }
     }
 
-    /* ===== NEW: BOOK GENERATION ===== */
+    /* ===== Book generation ===== */
     document.getElementById('btn-book').addEventListener('click', async () => {
       const prompt = document.getElementById('b-prompt').value.trim();
       const age = document.getElementById('b-age').value.trim() || '4-7';
@@ -238,8 +271,8 @@
           </div>
         `;
         status.textContent = 'Done.';
-        loadMedia();      // update gallery
-        loadStories();    // story saved by backend
+        loadMedia();
+        loadStories();
       } catch (e) {
         status.textContent = '';
         alert(e.message || 'Book failed.');
@@ -247,7 +280,7 @@
       }
     });
 
-    /* ===== NEW: MEDIA GALLERY ===== */
+    /* ===== Media Gallery ===== */
     async function loadMedia() {
       const grid = document.getElementById('media-list');
       const empty = document.getElementById('media-empty');
