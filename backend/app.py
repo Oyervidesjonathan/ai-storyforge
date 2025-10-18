@@ -5,6 +5,10 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, constr
 from openai import OpenAI
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+import os
+
 
 SERVICE_NAME = "AI StoryForge"
 APP_VERSION = "0.2.0"
