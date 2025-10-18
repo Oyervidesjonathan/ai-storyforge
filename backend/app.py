@@ -8,16 +8,15 @@ from pydantic import BaseModel, Field, constr
 from openai import OpenAI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from urllib.request import urlretrieve  # robust downloader
 
 SERVICE_NAME = "AI StoryForge"
-APP_VERSION = "0.3.3"
+APP_VERSION = "0.3.5"
 
 # ---------- OpenAI client ----------
-OPENAI_API_KEY   = os.getenv("OPENAI_API_KEY", "")
-OPENAI_ORG_ID    = os.getenv("OPENAI_ORG_ID", "")        # optional, but good to set
+OPENAI_API_KEY     = os.getenv("OPENAI_API_KEY", "")
+OPENAI_ORG_ID      = os.getenv("OPENAI_ORG_ID", "")              # optional but recommended
 OPENAI_TEXT_MODEL  = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-OPENAI_IMAGE_MODEL = os.getenv("IMAGE_MODEL", "gpt-image-1")
+OPENAI_IMAGE_MODEL = os.getenv("IMAGE_MODEL", "gpt-image-1")     # gpt-image-1 returns b64_json only
 
 client: Optional[OpenAI]
 if not OPENAI_API_KEY:
@@ -40,7 +39,7 @@ app.add_middleware(
 frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
 app.mount("/static", StaticFiles(directory=frontend_dir), name="static")
 
-# serve all persisted files under backend/data -> /media/...
+# Persisted files under backend/data -> served at /media/...
 DATA_ROOT = Path(__file__).parent / "data"
 DATA_ROOT.mkdir(parents=True, exist_ok=True)
 app.mount("/media", StaticFiles(directory=DATA_ROOT), name="media")
@@ -71,7 +70,7 @@ class ImageRequest(BaseModel):
     aspect: constr(strip_whitespace=True) = Field("square", description="square|portrait|landscape")
 
 class ImageResponse(BaseModel):
-    image_url: str  # self-hosted /media/... URL (PNG or SVG)
+    image_url: str  # /media/... URL (PNG or SVG)
 
 class BookRequest(BaseModel):
     story: StoryRequest
@@ -81,9 +80,9 @@ class BookResponse(BaseModel):
     id: str
     title: str
     chapters: List[str]
-    image_urls: Optional[List[str]] = None  # list of /media/... URLs
+    image_urls: Optional[List[str]] = None
 
-# ---------- Story Storage (JSON) ----------
+# ---------- Story Storage ----------
 STORIES: Dict[str, Dict] = {}
 STORIES_FILE = Path(__file__).parent / "stories.json"
 
@@ -132,16 +131,17 @@ def _image_prompt_from_chapter(title: str, chapter_text: str, style_hint: str) -
         f"Style: {style_hint}. Ultra kid-friendly, bright, cozy, no text overlay."
     )
 
+# Use ONLY sizes supported by gpt-image-1 to avoid 400s
 def _image_size(aspect: str) -> str:
     a = (aspect or "square").lower()
-    if a.startswith("port"): return "1024x1344"
-    if a.startswith("land"): return "1344x1024"
-    return "1024x1024"
+    if a.startswith("port"): return "1024x1536"   # portrait
+    if a.startswith("land"): return "1536x1024"   # landscape
+    return "1024x1024"                            # square
 
 def _image_size_px(aspect: str) -> Tuple[int, int]:
     a = (aspect or "square").lower()
-    if a.startswith("port"): return (1024, 1344)
-    if a.startswith("land"): return (1344, 1024)
+    if a.startswith("port"): return (1024, 1536)
+    if a.startswith("land"): return (1536, 1024)
     return (1024, 1024)
 
 def _placeholder_svg(title: str, w: int, h: int) -> str:
@@ -166,72 +166,40 @@ def _placeholder_svg(title: str, w: int, h: int) -> str:
 
 def _gen_image_to_file(prompt: str, aspect: str, dest_stem: Path) -> Path:
     """
-    Generate PNG via OpenAI Images.
-      1) Try URL response (default)
-      2) If no URL, try base64 response
-      3) If still no dice, try gpt-image-1-mini
-      4) Else: SVG placeholder
-    Always returns the absolute path to the saved file.
+    Minimal, spec-correct generator for gpt-image-1 (b64 only).
+    If the Images API isn't available for your org yet, falls back to SVG.
+    Always returns an absolute path to a saved file (PNG or SVG).
     """
     w, h = _image_size_px(aspect)
     dest_stem.parent.mkdir(parents=True, exist_ok=True)
 
-    def _try_model(model_name: str) -> Optional[Path]:
-        # Try URL mode first
-        try:
-            resp = client.images.generate(
-                model=model_name,
-                prompt=prompt,
-                size=_image_size(aspect),
-                quality="high",
-            )
-            url = getattr(resp.data[0], "url", None) if getattr(resp, "data", None) else None
-            if isinstance(url, str) and url.strip():
-                out = dest_stem.with_suffix(".png")
-                urlretrieve(url, str(out))
-                return out
-        except Exception as e:
-            print(f"⚠️ Image API url-mode failed ({model_name}): {e}")
+    try:
+        if client is None or not OPENAI_IMAGE_MODEL:
+            raise RuntimeError("Images API not configured")
 
-        # Try base64 mode (some accounts/models prefer this)
-        try:
-            resp = client.images.generate(
-                model=model_name,
-                prompt=prompt,
-                size=_image_size(aspect),
-                quality="high",
-                response_format="b64_json",
-            )
-            b64 = getattr(resp.data[0], "b64_json", None) if getattr(resp, "data", None) else None
-            if isinstance(b64, str) and b64.strip():
-                out = dest_stem.with_suffix(".png")
-                with open(out, "wb") as f:
-                    f.write(base64.b64decode(b64))
-                return out
-        except Exception as e:
-            print(f"⚠️ Image API b64-mode failed ({model_name}): {e}")
+        resp = client.images.generate(
+            model=OPENAI_IMAGE_MODEL,      # defaults to gpt-image-1
+            prompt=prompt,
+            size=_image_size(aspect),      # 1024x1024 | 1024x1536 | 1536x1024
+            quality="high",                # gpt-image-1 supports auto/high/medium/low
+            # IMPORTANT: no response_format here; gpt-image-1 returns b64_json by default
+        )
+        datum = resp.data[0] if getattr(resp, "data", None) else None
+        b64 = getattr(datum, "b64_json", None)
 
-        return None
+        if not isinstance(b64, str) or not b64.strip():
+            raise ValueError("No b64_json in image response (gpt-image-1 returns base64)")
 
-    if client is not None:
-        models_to_try: List[str] = []
-        if OPENAI_IMAGE_MODEL:
-            models_to_try.append(OPENAI_IMAGE_MODEL)
-        # add a sensible fallback if not already first
-        if "gpt-image-1-mini" not in models_to_try:
-            models_to_try.append("gpt-image-1-mini")
-        if "gpt-image-1" not in models_to_try:
-            models_to_try.append("gpt-image-1")
+        out = dest_stem.with_suffix(".png")
+        with open(out, "wb") as f:
+            f.write(base64.b64decode(b64))
+        return out
 
-        for mdl in models_to_try:
-            p = _try_model(mdl)
-            if p:
-                return p
-
-    # Fallback: SVG placeholder (always works)
-    out = dest_stem.with_suffix(".svg")
-    out.write_text(_placeholder_svg(prompt, w, h), encoding="utf-8")
-    return out
+    except Exception as e:
+        print(f"⚠️ Image API failed, using placeholder: {e}")
+        out = dest_stem.with_suffix(".svg")
+        out.write_text(_placeholder_svg(prompt, w, h), encoding="utf-8")
+        return out
 
 def _require_client():
     if client is None:
