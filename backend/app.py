@@ -1,7 +1,8 @@
-import os, time, uuid, json
-from typing import List, Optional, Dict
+# backend/app.py
+import os, time, uuid, json, base64
+from typing import List, Optional, Dict, Tuple
 from pathlib import Path
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, constr
 from openai import OpenAI
@@ -9,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 SERVICE_NAME = "AI StoryForge"
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.3.0"
 
 # ---------- OpenAI client ----------
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
@@ -18,7 +19,7 @@ OPENAI_IMAGE_MODEL = os.getenv("IMAGE_MODEL", "gpt-image-1")
 
 client: Optional[OpenAI]
 if not OPENAI_API_KEY:
-    client = None  # /health still works; story endpoints will 500 with clear message
+    client = None
 else:
     client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -33,9 +34,14 @@ app.add_middleware(
     allow_origins=["*"], allow_methods=["*"], allow_headers=["*"], allow_credentials=True,
 )
 
-# ---------- Serve static frontend ----------
+# ---------- Static mounts ----------
 frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
 app.mount("/static", StaticFiles(directory=frontend_dir), name="static")
+
+# serve all persisted files under backend/data -> /media/...
+DATA_ROOT = Path(__file__).parent / "data"
+DATA_ROOT.mkdir(parents=True, exist_ok=True)
+app.mount("/media", StaticFiles(directory=DATA_ROOT), name="media")
 
 @app.get("/ui")
 def serve_frontend():
@@ -63,7 +69,7 @@ class ImageRequest(BaseModel):
     aspect: constr(strip_whitespace=True) = Field("square", description="square|portrait|landscape")
 
 class ImageResponse(BaseModel):
-    image_url: str
+    image_url: str  # self-hosted /media/... URL (PNG or SVG)
 
 class BookRequest(BaseModel):
     story: StoryRequest
@@ -73,15 +79,15 @@ class BookResponse(BaseModel):
     id: str
     title: str
     chapters: List[str]
-    image_urls: Optional[List[str]] = None
+    image_urls: Optional[List[str]] = None  # list of /media/... URLs
 
-# ---------- Story Storage ----------
+# ---------- Story Storage (JSON) ----------
 STORIES: Dict[str, Dict] = {}
-DATA_FILE = Path(__file__).parent / "stories.json"
+STORIES_FILE = Path(__file__).parent / "stories.json"
 
 def save_stories():
     try:
-        with open(DATA_FILE, "w", encoding="utf-8") as f:
+        with open(STORIES_FILE, "w", encoding="utf-8") as f:
             json.dump(STORIES, f, ensure_ascii=False, indent=2)
         print(f"💾 Saved {len(STORIES)} stories")
     except Exception as e:
@@ -90,8 +96,8 @@ def save_stories():
 def load_stories():
     global STORIES
     try:
-        if DATA_FILE.exists():
-            with open(DATA_FILE, "r", encoding="utf-8") as f:
+        if STORIES_FILE.exists():
+            with open(STORIES_FILE, "r", encoding="utf-8") as f:
                 STORIES = json.load(f)
             print(f"✅ Loaded {len(STORIES)} stories")
         else:
@@ -125,10 +131,68 @@ def _image_prompt_from_chapter(title: str, chapter_text: str, style_hint: str) -
     )
 
 def _image_size(aspect: str) -> str:
-    a = aspect.lower()
+    a = (aspect or "square").lower()
     if a.startswith("port"): return "1024x1344"
     if a.startswith("land"): return "1344x1024"
     return "1024x1024"
+
+def _image_size_px(aspect: str) -> Tuple[int, int]:
+    a = (aspect or "square").lower()
+    if a.startswith("port"): return (1024, 1344)
+    if a.startswith("land"): return (1344, 1024)
+    return (1024, 1024)
+
+def _placeholder_svg(title: str, w: int, h: int) -> str:
+    t = (title or "StoryForge").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}">
+  <defs>
+    <linearGradient id="g" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#fde68a"/>
+      <stop offset="100%" stop-color="#fca5a5"/>
+    </linearGradient>
+  </defs>
+  <rect width="100%" height="100%" fill="url(#g)" rx="24" ry="24"/>
+  <text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle"
+        font-family="Arial, sans-serif" font-size="{int(min(w,h)*0.08)}" fill="#1f2937">
+    {t[:50]}
+  </text>
+  <text x="50%" y="62%" dominant-baseline="middle" text-anchor="middle"
+        font-family="Arial, sans-serif" font-size="{int(min(w,h)*0.04)}" fill="#374151">
+    (placeholder illustration)
+  </text>
+</svg>"""
+
+def _gen_image_to_file(prompt: str, aspect: str, dest_stem: Path) -> Path:
+    """
+    Try to generate PNG via OpenAI image API; on failure, save a local SVG placeholder.
+    Returns the absolute path to the saved file (PNG or SVG).
+    """
+    w, h = _image_size_px(aspect)
+    dest_stem.parent.mkdir(parents=True, exist_ok=True)
+
+    # Try OpenAI first (if configured)
+    if client is not None and OPENAI_IMAGE_MODEL:
+        try:
+            resp = client.images.generate(
+                model=OPENAI_IMAGE_MODEL,
+                prompt=prompt,
+                size=_image_size(aspect),
+                quality="high",
+                response_format="b64_json",
+            )
+            b64 = resp.data[0].b64_json
+            img_bytes = base64.b64decode(b64)
+            out = dest_stem.with_suffix(".png")
+            with open(out, "wb") as f:
+                f.write(img_bytes)
+            return out
+        except Exception as e:
+            print(f"⚠️ Image API failed, using placeholder: {e}")
+
+    # Fallback: SVG placeholder
+    out = dest_stem.with_suffix(".svg")
+    out.write_text(_placeholder_svg(prompt, w, h), encoding="utf-8")
+    return out
 
 def _require_client():
     if client is None:
@@ -143,6 +207,7 @@ def root():
 def health():
     return {"ok": True, "ts": int(time.time())}
 
+# ---- Stories (persistent) ----
 @app.get("/stories", response_model=List[StoryItem], tags=["Stories"])
 def list_stories():
     items: List[StoryItem] = []
@@ -202,31 +267,42 @@ def delete_story(story_id: str):
     save_stories()
     return {"ok": True, "deleted_id": story_id}
 
+# ---- Images (now saves to disk and returns self-hosted URL) ----
 @app.post("/images", response_model=ImageResponse, tags=["Images"])
 def generate_image(req: ImageRequest):
-    _require_client()
-    prompt = req.prompt.strip()
-    try:
-        img = client.images.generate(
-            model=OPENAI_IMAGE_MODEL,
-            prompt=prompt,
-            size=_image_size(req.aspect),
-            quality="high",
-        )
-        url = img.data[0].url
-        return ImageResponse(image_url=url)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Image error: {e}")
+    """
+    Generates an image to backend/data/tmp/<uuid>.png (or .svg placeholder),
+    and returns a public /media/... URL you can embed.
+    """
+    tmp_dir = DATA_ROOT / "tmp"
+    dest_stem = tmp_dir / str(uuid.uuid4())
+    abs_path = _gen_image_to_file(req.prompt.strip(), req.aspect, dest_stem)
 
+    # convert absolute path under data/ to /media/ URL
+    rel = Path(abs_path).relative_to(DATA_ROOT)
+    return ImageResponse(image_url=f"/media/{rel.as_posix()}")
+
+# ---- Books (one image per chapter; returns URLs) ----
 @app.post("/books", response_model=BookResponse, tags=["Books"])
 def generate_book(req: BookRequest):
+    # 1) make the story via text model
     story = generate_story(req.story)
+
     urls: Optional[List[str]] = None
     if req.images:
+        # each book gets its own folder under data/books/<id>/
+        book_id = str(uuid.uuid4())  # temp id for paths
+        book_dir = DATA_ROOT / "books" / book_id
         urls = []
-        for ch in story.chapters:
+        for idx, ch in enumerate(story.chapters, start=1):
             iprompt = _image_prompt_from_chapter(story.title, ch, req.story.style)
-            url = generate_image(ImageRequest(prompt=iprompt, aspect="square")).image_url
-            urls.append(url)
-    book_id = str(uuid.uuid4())
-    return BookResponse(id=book_id, title=story.title, chapters=story.chapters, image_urls=urls)
+            dest_stem = book_dir / f"page_{idx:02d}"
+            abs_path = _gen_image_to_file(iprompt, "square", dest_stem)
+            rel = Path(abs_path).relative_to(DATA_ROOT)
+            urls.append(f"/media/{rel.as_posix()}")
+        # we’ll reuse the same id for response so the folder matches
+        final_id = book_id
+    else:
+        final_id = str(uuid.uuid4())
+
+    return BookResponse(id=final_id, title=story.title, chapters=story.chapters, image_urls=urls)
