@@ -2,7 +2,7 @@
 import os, time, uuid, json, base64
 from typing import List, Optional, Dict, Tuple
 from pathlib import Path
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, constr
 from openai import OpenAI
@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 SERVICE_NAME = "AI StoryForge"
-APP_VERSION = "0.3.6"
+APP_VERSION = "0.3.7"
 
 # ---------- OpenAI client ----------
 OPENAI_API_KEY     = os.getenv("OPENAI_API_KEY", "")
@@ -39,12 +39,16 @@ app.add_middleware(
 frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
 app.mount("/static", StaticFiles(directory=frontend_dir), name="static")
 
-# ✅ Use mounted /data if present, otherwise fall back to local
+# ✅ Use mounted /data if present (MEDIA_ROOT=/data), else fall back to local ./data
 DEFAULT_MEDIA = Path(__file__).parent / "data"
 DATA_ROOT = Path(os.getenv("MEDIA_ROOT", "/data"))
 if not DATA_ROOT.exists():
     DATA_ROOT = DEFAULT_MEDIA
 DATA_ROOT.mkdir(parents=True, exist_ok=True)
+
+# Show where we’re actually writing
+print("📂 MEDIA ROOT =", str(DATA_ROOT.resolve()))
+print("📦 Exists?", DATA_ROOT.exists(), "Writable?", os.access(DATA_ROOT, os.W_OK))
 
 # Serve persisted files under /media
 app.mount("/media", StaticFiles(directory=DATA_ROOT), name="media")
@@ -75,7 +79,7 @@ class ImageRequest(BaseModel):
     aspect: constr(strip_whitespace=True) = Field("square", description="square|portrait|landscape")
 
 class ImageResponse(BaseModel):
-    image_url: str
+    image_url: str  # always a /media/... URL
 
 class BookRequest(BaseModel):
     story: StoryRequest
@@ -135,6 +139,7 @@ def _image_prompt_from_chapter(title: str, chapter_text: str, style_hint: str) -
         f"Style: {style_hint}. Ultra kid-friendly, bright, cozy, no text overlay."
     )
 
+# gpt-image-1 valid sizes only
 def _image_size(aspect: str) -> str:
     a = (aspect or "square").lower()
     if a.startswith("port"): return "1024x1536"
@@ -168,6 +173,10 @@ def _placeholder_svg(title: str, w: int, h: int) -> str:
 </svg>"""
 
 def _gen_image_to_file(prompt: str, aspect: str, dest_stem: Path) -> Path:
+    """
+    Generate PNG via gpt-image-1 (returns b64_json by default).
+    On any error or if the model isn't available, fall back to an SVG placeholder.
+    """
     w, h = _image_size_px(aspect)
     dest_stem.parent.mkdir(parents=True, exist_ok=True)
 
@@ -178,12 +187,12 @@ def _gen_image_to_file(prompt: str, aspect: str, dest_stem: Path) -> Path:
         resp = client.images.generate(
             model=OPENAI_IMAGE_MODEL,
             prompt=prompt,
-            size=_image_size(aspect),
+            size=_image_size(aspect),   # 1024x1024 | 1024x1536 | 1536x1024
             quality="high",
+            # no response_format; gpt-image-1 returns b64_json by default
         )
         datum = resp.data[0] if getattr(resp, "data", None) else None
         b64 = getattr(datum, "b64_json", None)
-
         if not isinstance(b64, str) or not b64.strip():
             raise ValueError("No b64_json in image response")
 
@@ -295,19 +304,31 @@ def generate_book(req: BookRequest):
             abs_path = _gen_image_to_file(iprompt, "square", dest_stem)
             rel = Path(abs_path).relative_to(DATA_ROOT)
             urls.append(f"/media/{rel.as_posix()}")
-
         final_id = book_id
     else:
         final_id = str(uuid.uuid4())
 
     return BookResponse(id=final_id, title=story.title, chapters=story.chapters, image_urls=urls)
 
-# ---- Debug helper ----
+# ---- Debug helpers ----
 @app.get("/debug/media")
 def debug_media():
-    out = []
+    """List files under DATA_ROOT and show the active media root."""
+    items = []
     for p in DATA_ROOT.rglob("*"):
         if p.is_file():
             rel = p.relative_to(DATA_ROOT).as_posix()
-            out.append({"url": f"/media/{rel}", "bytes": p.stat().st_size})
-    return {"root": str(DATA_ROOT), "count": len(out), "items": out[:200]}
+            items.append({"url": f"/media/{rel}", "bytes": p.stat().st_size})
+    items.sort(key=lambda x: (DATA_ROOT / x["url"].replace("/media/", "")).stat().st_mtime if (DATA_ROOT / x["url"].replace("/media/", "")).exists() else 0, reverse=True)
+    return {"root": str(DATA_ROOT), "count": len(items), "items": items[:200]}
+
+@app.get("/debug/read")
+def debug_read_media(path: str = Query(..., description="Path relative to /media, e.g. tmp/abc.png or books/<id>/page_01.png")):
+    """Confirm a specific file exists under DATA_ROOT."""
+    p = Path(path)
+    if p.is_absolute() or ".." in p.parts:
+        raise HTTPException(status_code=400, detail="bad path")
+    target = DATA_ROOT / p
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="not found")
+    return {"root": str(DATA_ROOT), "path": path, "exists": True, "bytes": target.stat().st_size}
