@@ -1,27 +1,30 @@
 # backend/app.py
-import os, time, uuid, json, urllib.request
+import os, time, uuid, json
 from typing import List, Optional, Dict, Tuple
 from pathlib import Path
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, constr
 from openai import OpenAI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from urllib.request import urlretrieve  # robust downloader
 
 SERVICE_NAME = "AI StoryForge"
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.3.2"
 
 # ---------- OpenAI client ----------
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_TEXT_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-OPENAI_IMAGE_MODEL = os.getenv("IMAGE_MODEL", "gpt-image-1")
+OPENAI_ORG_ID   = os.getenv("OPENAI_ORG_ID", "")  # NEW: tie the key to your verified org (optional)
+OPENAI_TEXT_MODEL  = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+OPENAI_IMAGE_MODEL = os.getenv("IMAGE_MODEL", "gpt-image-1")  # try "gpt-image-1-mini" if needed
 
 client: Optional[OpenAI]
 if not OPENAI_API_KEY:
     client = None
 else:
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    # pass organization only if provided; otherwise default account routing
+    client = OpenAI(api_key=OPENAI_API_KEY, organization=(OPENAI_ORG_ID or None))
 
 # ---------- FastAPI ----------
 app = FastAPI(
@@ -164,11 +167,10 @@ def _placeholder_svg(title: str, w: int, h: int) -> str:
 
 def _gen_image_to_file(prompt: str, aspect: str, dest_stem: Path) -> Path:
     """
-    Try to generate PNG via OpenAI image API (download from returned URL);
-    on failure, save a local SVG placeholder.
+    Generate PNG via OpenAI Images (download from returned URL).
+    On failure (e.g., 403 / not enabled), save a local SVG placeholder.
+    Always returns the absolute path to the saved file.
     """
-    from urllib.request import urlretrieve  # local import to avoid handler quirks
-
     w, h = _image_size_px(aspect)
     dest_stem.parent.mkdir(parents=True, exist_ok=True)
 
@@ -177,13 +179,16 @@ def _gen_image_to_file(prompt: str, aspect: str, dest_stem: Path) -> Path:
             resp = client.images.generate(
                 model=OPENAI_IMAGE_MODEL,
                 prompt=prompt,
-                size=_image_size(aspect),  # e.g., "1024x1024"
+                size=_image_size(aspect),
                 quality="high"
             )
-            url = resp.data[0].url
+            # Validate the URL robustly
+            url = getattr(resp.data[0], "url", None) if getattr(resp, "data", None) else None
+            if not isinstance(url, str) or not url.strip():
+                raise ValueError("Image URL missing from API response")
+
             out = dest_stem.with_suffix(".png")
-            # simpler + robust download
-            urlretrieve(url, out)  # writes file to disk
+            urlretrieve(url, str(out))   # ensure str path
             return out
         except Exception as e:
             print(f"⚠️ Image API failed, using placeholder: {e}")
@@ -192,7 +197,6 @@ def _gen_image_to_file(prompt: str, aspect: str, dest_stem: Path) -> Path:
     out = dest_stem.with_suffix(".svg")
     out.write_text(_placeholder_svg(prompt, w, h), encoding="utf-8")
     return out
-
 
 def _require_client():
     if client is None:
