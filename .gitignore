@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+env/
+venv/
+
+# Environment
+.env
+.env.local
+.DS_Store
+
+# IDEs
+.vscode/
+.idea/
+
+# Images and generated outputs
+minio-data/
+uploads/
+generated/
+out/
+
+# Node/Frontend build
+node_modules/
+dist/
+build/
+
+# OS
+Thumbs.db
