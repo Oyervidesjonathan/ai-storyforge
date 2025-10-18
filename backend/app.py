@@ -1,14 +1,12 @@
-# backend/app.py
-import os, time, uuid
+import os, time, uuid, json
 from typing import List, Optional, Dict
+from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, constr
 from openai import OpenAI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-import os
-
 
 SERVICE_NAME = "AI StoryForge"
 APP_VERSION = "0.2.0"
@@ -43,7 +41,6 @@ app.mount("/static", StaticFiles(directory=frontend_dir), name="static")
 def serve_frontend():
     return FileResponse(os.path.join(frontend_dir, "index.html"))
 
-
 # ---------- Schemas ----------
 class StoryRequest(BaseModel):
     prompt: constr(strip_whitespace=True, min_length=3) = Field(..., example="A shy firefly who learns to shine with new friends")
@@ -55,7 +52,6 @@ class StoryResponse(BaseModel):
     title: str
     chapters: List[str]
 
-# NEW: brief item for listing
 class StoryItem(BaseModel):
     id: str
     title: str
@@ -79,9 +75,34 @@ class BookResponse(BaseModel):
     chapters: List[str]
     image_urls: Optional[List[str]] = None
 
-# ---------- In-memory store (simple) ----------
-# id -> {"title": str, "chapters": List[str], "created_at": int}
+# ---------- Story Storage ----------
 STORIES: Dict[str, Dict] = {}
+DATA_FILE = Path(__file__).parent / "stories.json"
+
+def save_stories():
+    try:
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(STORIES, f, ensure_ascii=False, indent=2)
+        print(f"💾 Saved {len(STORIES)} stories")
+    except Exception as e:
+        print(f"⚠️ Failed to save stories: {e}")
+
+def load_stories():
+    global STORIES
+    try:
+        if DATA_FILE.exists():
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                STORIES = json.load(f)
+            print(f"✅ Loaded {len(STORIES)} stories")
+        else:
+            STORIES = {}
+            print("🆕 No stories.json found. Starting fresh.")
+    except Exception as e:
+        print(f"⚠️ Failed to load stories: {e}")
+        STORIES = {}
+
+# Load on startup
+load_stories()
 
 # ---------- Helpers ----------
 def _title_from_prompt(prompt: str, age_range: str) -> str:
@@ -122,7 +143,6 @@ def root():
 def health():
     return {"ok": True, "ts": int(time.time())}
 
-# NEW: list stories (fixes 405)
 @app.get("/stories", response_model=List[StoryItem], tags=["Stories"])
 def list_stories():
     items: List[StoryItem] = []
@@ -133,11 +153,9 @@ def list_stories():
             chapters_count=len(data["chapters"]),
             created_at=data["created_at"],
         ))
-    # newest first
     items.sort(key=lambda x: x.created_at, reverse=True)
     return items
 
-# NEW: get one story by id
 @app.get("/stories/{story_id}", response_model=StoryResponse, tags=["Stories"])
 def get_story(story_id: str):
     data = STORIES.get(story_id)
@@ -169,14 +187,20 @@ def generate_story(req: StoryRequest):
             text = (resp.choices[0].message.content or "").strip()
             chapters.append(text if text else "…")
     except Exception as e:
-        # Return 500 (so the proxy doesn't map it as a 502 Bad Gateway)
         raise HTTPException(status_code=500, detail=f"LLM error: {e}")
 
-    # NEW: persist so GET endpoints work
     story_id = str(uuid.uuid4())
     STORIES[story_id] = {"title": title, "chapters": chapters, "created_at": int(time.time())}
-
+    save_stories()
     return StoryResponse(title=title, chapters=chapters)
+
+@app.delete("/stories/{story_id}", tags=["Stories"])
+def delete_story(story_id: str):
+    if story_id not in STORIES:
+        raise HTTPException(status_code=404, detail="Story not found")
+    del STORIES[story_id]
+    save_stories()
+    return {"ok": True, "deleted_id": story_id}
 
 @app.post("/images", response_model=ImageResponse, tags=["Images"])
 def generate_image(req: ImageRequest):
@@ -196,9 +220,7 @@ def generate_image(req: ImageRequest):
 
 @app.post("/books", response_model=BookResponse, tags=["Books"])
 def generate_book(req: BookRequest):
-    # 1) story
     story = generate_story(req.story)
-    # 2) images (optional)
     urls: Optional[List[str]] = None
     if req.images:
         urls = []
@@ -206,6 +228,5 @@ def generate_book(req: BookRequest):
             iprompt = _image_prompt_from_chapter(story.title, ch, req.story.style)
             url = generate_image(ImageRequest(prompt=iprompt, aspect="square")).image_url
             urls.append(url)
-
     book_id = str(uuid.uuid4())
     return BookResponse(id=book_id, title=story.title, chapters=story.chapters, image_urls=urls)
