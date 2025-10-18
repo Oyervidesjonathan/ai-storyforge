@@ -2,7 +2,7 @@
 import os, time, uuid, json, base64
 from typing import List, Optional, Dict, Tuple
 from pathlib import Path
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, constr
 from openai import OpenAI
@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 SERVICE_NAME = "AI StoryForge"
-APP_VERSION = "0.3.7"
+APP_VERSION = "0.3.8"
 
 # ---------- OpenAI client ----------
 OPENAI_API_KEY     = os.getenv("OPENAI_API_KEY", "")
@@ -79,7 +79,8 @@ class ImageRequest(BaseModel):
     aspect: constr(strip_whitespace=True) = Field("square", description="square|portrait|landscape")
 
 class ImageResponse(BaseModel):
-    image_url: str  # always a /media/... URL
+    image_url: str           # /media/... URL
+    absolute_url: str        # full https://... URL
 
 class BookRequest(BaseModel):
     story: StoryRequest
@@ -281,12 +282,22 @@ def delete_story(story_id: str):
 
 # ---- Images ----
 @app.post("/images", response_model=ImageResponse, tags=["Images"])
-def generate_image(req: ImageRequest):
+def generate_image(req: ImageRequest, request: Request):
     tmp_dir = DATA_ROOT / "tmp"
     dest_stem = tmp_dir / str(uuid.uuid4())
     abs_path = _gen_image_to_file(req.prompt.strip(), req.aspect, dest_stem)
     rel = Path(abs_path).relative_to(DATA_ROOT)
-    return ImageResponse(image_url=f"/media/{rel.as_posix()}")
+    rel_url = f"/media/{rel.as_posix()}"
+
+    # Build absolute URL from the incoming request
+    base_url = str(request.base_url).rstrip("/")
+    absolute_url = f"{base_url}{rel_url}"
+
+    # Helpful logs
+    print(f"🖼️ Saved image  → {abs_path}")
+    print(f"🌐 Open this URL → {absolute_url}")
+
+    return ImageResponse(image_url=rel_url, absolute_url=absolute_url)
 
 # ---- Books ----
 @app.post("/books", response_model=BookResponse, tags=["Books"])
@@ -319,7 +330,15 @@ def debug_media():
         if p.is_file():
             rel = p.relative_to(DATA_ROOT).as_posix()
             items.append({"url": f"/media/{rel}", "bytes": p.stat().st_size})
-    items.sort(key=lambda x: (DATA_ROOT / x["url"].replace("/media/", "")).stat().st_mtime if (DATA_ROOT / x["url"].replace("/media/", "")).exists() else 0, reverse=True)
+    # sort newest first
+    try:
+        items.sort(
+            key=lambda x: (DATA_ROOT / x["url"].replace("/media/", "")).stat().st_mtime
+            if (DATA_ROOT / x["url"].replace("/media/", "")).exists() else 0,
+            reverse=True
+        )
+    except Exception:
+        pass
     return {"root": str(DATA_ROOT), "count": len(items), "items": items[:200]}
 
 @app.get("/debug/read")
