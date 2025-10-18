@@ -1,5 +1,5 @@
 # backend/app.py
-import os, time, uuid, json
+import os, time, uuid, json, base64
 from typing import List, Optional, Dict, Tuple
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
@@ -11,19 +11,18 @@ from fastapi.responses import FileResponse
 from urllib.request import urlretrieve  # robust downloader
 
 SERVICE_NAME = "AI StoryForge"
-APP_VERSION = "0.3.2"
+APP_VERSION = "0.3.3"
 
 # ---------- OpenAI client ----------
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_ORG_ID   = os.getenv("OPENAI_ORG_ID", "")  # NEW: tie the key to your verified org (optional)
+OPENAI_API_KEY   = os.getenv("OPENAI_API_KEY", "")
+OPENAI_ORG_ID    = os.getenv("OPENAI_ORG_ID", "")        # optional, but good to set
 OPENAI_TEXT_MODEL  = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-OPENAI_IMAGE_MODEL = os.getenv("IMAGE_MODEL", "gpt-image-1")  # try "gpt-image-1-mini" if needed
+OPENAI_IMAGE_MODEL = os.getenv("IMAGE_MODEL", "gpt-image-1")
 
 client: Optional[OpenAI]
 if not OPENAI_API_KEY:
     client = None
 else:
-    # pass organization only if provided; otherwise default account routing
     client = OpenAI(api_key=OPENAI_API_KEY, organization=(OPENAI_ORG_ID or None))
 
 # ---------- FastAPI ----------
@@ -167,31 +166,67 @@ def _placeholder_svg(title: str, w: int, h: int) -> str:
 
 def _gen_image_to_file(prompt: str, aspect: str, dest_stem: Path) -> Path:
     """
-    Generate PNG via OpenAI Images (download from returned URL).
-    On failure (e.g., 403 / not enabled), save a local SVG placeholder.
+    Generate PNG via OpenAI Images.
+      1) Try URL response (default)
+      2) If no URL, try base64 response
+      3) If still no dice, try gpt-image-1-mini
+      4) Else: SVG placeholder
     Always returns the absolute path to the saved file.
     """
     w, h = _image_size_px(aspect)
     dest_stem.parent.mkdir(parents=True, exist_ok=True)
 
-    if client is not None and OPENAI_IMAGE_MODEL:
+    def _try_model(model_name: str) -> Optional[Path]:
+        # Try URL mode first
         try:
             resp = client.images.generate(
-                model=OPENAI_IMAGE_MODEL,
+                model=model_name,
                 prompt=prompt,
                 size=_image_size(aspect),
-                quality="high"
+                quality="high",
             )
-            # Validate the URL robustly
             url = getattr(resp.data[0], "url", None) if getattr(resp, "data", None) else None
-            if not isinstance(url, str) or not url.strip():
-                raise ValueError("Image URL missing from API response")
-
-            out = dest_stem.with_suffix(".png")
-            urlretrieve(url, str(out))   # ensure str path
-            return out
+            if isinstance(url, str) and url.strip():
+                out = dest_stem.with_suffix(".png")
+                urlretrieve(url, str(out))
+                return out
         except Exception as e:
-            print(f"⚠️ Image API failed, using placeholder: {e}")
+            print(f"⚠️ Image API url-mode failed ({model_name}): {e}")
+
+        # Try base64 mode (some accounts/models prefer this)
+        try:
+            resp = client.images.generate(
+                model=model_name,
+                prompt=prompt,
+                size=_image_size(aspect),
+                quality="high",
+                response_format="b64_json",
+            )
+            b64 = getattr(resp.data[0], "b64_json", None) if getattr(resp, "data", None) else None
+            if isinstance(b64, str) and b64.strip():
+                out = dest_stem.with_suffix(".png")
+                with open(out, "wb") as f:
+                    f.write(base64.b64decode(b64))
+                return out
+        except Exception as e:
+            print(f"⚠️ Image API b64-mode failed ({model_name}): {e}")
+
+        return None
+
+    if client is not None:
+        models_to_try: List[str] = []
+        if OPENAI_IMAGE_MODEL:
+            models_to_try.append(OPENAI_IMAGE_MODEL)
+        # add a sensible fallback if not already first
+        if "gpt-image-1-mini" not in models_to_try:
+            models_to_try.append("gpt-image-1-mini")
+        if "gpt-image-1" not in models_to_try:
+            models_to_try.append("gpt-image-1")
+
+        for mdl in models_to_try:
+            p = _try_model(mdl)
+            if p:
+                return p
 
     # Fallback: SVG placeholder (always works)
     out = dest_stem.with_suffix(".svg")
