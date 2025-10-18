@@ -1,5 +1,5 @@
 # backend/app.py
-import os, time, uuid, json, base64
+import os, time, uuid, json, urllib.request
 from typing import List, Optional, Dict, Tuple
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query
@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 SERVICE_NAME = "AI StoryForge"
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.3.1"
 
 # ---------- OpenAI client ----------
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
@@ -164,32 +164,28 @@ def _placeholder_svg(title: str, w: int, h: int) -> str:
 
 def _gen_image_to_file(prompt: str, aspect: str, dest_stem: Path) -> Path:
     """
-    Try to generate PNG via OpenAI image API; on failure, save a local SVG placeholder.
-    Returns the absolute path to the saved file (PNG or SVG).
+    Try to generate PNG via OpenAI image API (download from returned URL);
+    on failure, save a local SVG placeholder.
     """
     w, h = _image_size_px(aspect)
     dest_stem.parent.mkdir(parents=True, exist_ok=True)
 
-    # Try OpenAI first (if configured)
     if client is not None and OPENAI_IMAGE_MODEL:
         try:
             resp = client.images.generate(
                 model=OPENAI_IMAGE_MODEL,
                 prompt=prompt,
                 size=_image_size(aspect),
-                quality="high",
-                response_format="b64_json",
+                quality="high"
             )
-            b64 = resp.data[0].b64_json
-            img_bytes = base64.b64decode(b64)
+            url = resp.data[0].url
             out = dest_stem.with_suffix(".png")
-            with open(out, "wb") as f:
-                f.write(img_bytes)
+            with urllib.request.urlopen(url, timeout=60) as r, open(out, "wb") as f:
+                f.write(r.read())
             return out
         except Exception as e:
             print(f"⚠️ Image API failed, using placeholder: {e}")
 
-    # Fallback: SVG placeholder
     out = dest_stem.with_suffix(".svg")
     out.write_text(_placeholder_svg(prompt, w, h), encoding="utf-8")
     return out
@@ -207,7 +203,7 @@ def root():
 def health():
     return {"ok": True, "ts": int(time.time())}
 
-# ---- Stories (persistent) ----
+# ---- Stories ----
 @app.get("/stories", response_model=List[StoryItem], tags=["Stories"])
 def list_stories():
     items: List[StoryItem] = []
@@ -267,31 +263,23 @@ def delete_story(story_id: str):
     save_stories()
     return {"ok": True, "deleted_id": story_id}
 
-# ---- Images (now saves to disk and returns self-hosted URL) ----
+# ---- Images ----
 @app.post("/images", response_model=ImageResponse, tags=["Images"])
 def generate_image(req: ImageRequest):
-    """
-    Generates an image to backend/data/tmp/<uuid>.png (or .svg placeholder),
-    and returns a public /media/... URL you can embed.
-    """
     tmp_dir = DATA_ROOT / "tmp"
     dest_stem = tmp_dir / str(uuid.uuid4())
     abs_path = _gen_image_to_file(req.prompt.strip(), req.aspect, dest_stem)
-
-    # convert absolute path under data/ to /media/ URL
     rel = Path(abs_path).relative_to(DATA_ROOT)
     return ImageResponse(image_url=f"/media/{rel.as_posix()}")
 
-# ---- Books (one image per chapter; returns URLs) ----
+# ---- Books ----
 @app.post("/books", response_model=BookResponse, tags=["Books"])
 def generate_book(req: BookRequest):
-    # 1) make the story via text model
     story = generate_story(req.story)
 
     urls: Optional[List[str]] = None
     if req.images:
-        # each book gets its own folder under data/books/<id>/
-        book_id = str(uuid.uuid4())  # temp id for paths
+        book_id = str(uuid.uuid4())
         book_dir = DATA_ROOT / "books" / book_id
         urls = []
         for idx, ch in enumerate(story.chapters, start=1):
@@ -300,7 +288,6 @@ def generate_book(req: BookRequest):
             abs_path = _gen_image_to_file(iprompt, "square", dest_stem)
             rel = Path(abs_path).relative_to(DATA_ROOT)
             urls.append(f"/media/{rel.as_posix()}")
-        # we’ll reuse the same id for response so the folder matches
         final_id = book_id
     else:
         final_id = str(uuid.uuid4())
