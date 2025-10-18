@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>AI StoryForge 📖</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    body { font-family: Arial, sans-serif; background: #faf6f2; color: #333; padding: 20px; }
+    h1 { text-align: center; }
+    .story-list { display: flex; flex-direction: column; gap: 10px; margin-top: 20px; }
+    .story-card { padding: 12px; background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer; }
+    .story-card:hover { background: #f1ece7; }
+    .story-title { font-size: 1.2em; margin-bottom: 4px; }
+    .story-meta { font-size: 0.9em; color: #666; }
+    .story-view { margin-top: 20px; padding: 20px; background: #fff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+    .back-btn { margin-top: 15px; background: #333; color: white; padding: 8px 12px; border: none; border-radius: 6px; cursor: pointer; }
+    .back-btn:hover { background: #555; }
+  </style>
+</head>
+<body>
+  <h1>📚 AI StoryForge</h1>
+
+  <div id="story-list" class="story-list"></div>
+  <div id="story-view" class="story-view" style="display:none;"></div>
+
+  <script>
+    const API_BASE = window.location.origin; // auto-uses your Railway domain
+
+    async function loadStories() {
+      const res = await fetch(`${API_BASE}/stories`);
+      const stories = await res.json();
+
+      const list = document.getElementById('story-list');
+      list.innerHTML = '';
+
+      if (stories.length === 0) {
+        list.innerHTML = '<p>No stories yet. Try creating one in /docs 👀</p>';
+        return;
+      }
+
+      stories.forEach(story => {
+        const card = document.createElement('div');
+        card.className = 'story-card';
+        card.innerHTML = `
+          <div class="story-title">${story.title}</div>
+          <div class="story-meta">${story.chapters_count} chapter(s)</div>
+        `;
+        card.onclick = () => viewStory(story.id);
+        list.appendChild(card);
+      });
+    }
+
+    async function viewStory(id) {
+      const res = await fetch(`${API_BASE}/stories/${id}`);
+      const story = await res.json();
+
+      const view = document.getElementById('story-view');
+      view.style.display = 'block';
+      view.innerHTML = `
+        <h2>${story.title}</h2>
+        ${story.chapters.map((c, i) => `<h3>Chapter ${i+1}</h3><p>${c}</p>`).join('')}
+        <button class="back-btn" onclick="backToList()">⬅ Back</button>
+      `;
+
+      document.getElementById('story-list').style.display = 'none';
+    }
+
+    function backToList() {
+      document.getElementById('story-list').style.display = 'flex';
+      document.getElementById('story-view').style.display = 'none';
+    }
+
+    loadStories();
+  </script>
+</body>
+</html>
