@@ -2,7 +2,7 @@
 import os, time, uuid, json, base64
 from typing import List, Optional, Dict, Tuple
 from pathlib import Path
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, constr
 from openai import OpenAI
@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 SERVICE_NAME = "AI StoryForge"
-APP_VERSION = "0.3.8"
+APP_VERSION = "0.4.0"
 
 # ---------- OpenAI client ----------
 OPENAI_API_KEY     = os.getenv("OPENAI_API_KEY", "")
@@ -30,6 +30,7 @@ app = FastAPI(
     version=APP_VERSION,
     description="Generate children's stories and illustrations.",
 )
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_methods=["*"], allow_headers=["*"], allow_credentials=True,
@@ -39,18 +40,16 @@ app.add_middleware(
 frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
 app.mount("/static", StaticFiles(directory=frontend_dir), name="static")
 
-# ✅ Use mounted /data if present (MEDIA_ROOT=/data), else fall back to local ./data
+# Use mounted /data if present, else local ./data
 DEFAULT_MEDIA = Path(__file__).parent / "data"
 DATA_ROOT = Path(os.getenv("MEDIA_ROOT", "/data"))
 if not DATA_ROOT.exists():
     DATA_ROOT = DEFAULT_MEDIA
 DATA_ROOT.mkdir(parents=True, exist_ok=True)
 
-# Show where we’re actually writing
 print("📂 MEDIA ROOT =", str(DATA_ROOT.resolve()))
 print("📦 Exists?", DATA_ROOT.exists(), "Writable?", os.access(DATA_ROOT, os.W_OK))
 
-# Serve persisted files under /media
 app.mount("/media", StaticFiles(directory=DATA_ROOT), name="media")
 
 @app.get("/ui")
@@ -79,12 +78,26 @@ class ImageRequest(BaseModel):
     aspect: constr(strip_whitespace=True) = Field("square", description="square|portrait|landscape")
 
 class ImageResponse(BaseModel):
-    image_url: str           # /media/... URL
-    absolute_url: str        # full https://... URL
+    image_url: str  # always a /media/... URL
 
 class BookRequest(BaseModel):
     story: StoryRequest
     images: bool = True
+
+class Page(BaseModel):
+    chapter_index: int
+    text: str
+    image_urls: List[str]  # 1–3 per chapter
+
+class BookComposeRequest(BaseModel):
+    story: StoryRequest
+    images_per_chapter: int = Field(2, ge=1, le=3)
+
+class BookComposeResponse(BaseModel):
+    id: str
+    title: str
+    pages: List[Page]
+    cover_url: Optional[str] = None
 
 class BookResponse(BaseModel):
     id: str
@@ -140,6 +153,13 @@ def _image_prompt_from_chapter(title: str, chapter_text: str, style_hint: str) -
         f"Style: {style_hint}. Ultra kid-friendly, bright, cozy, no text overlay."
     )
 
+def _image_prompts_for_chapter(title: str, chapter_text: str, style_hint: str, n: int) -> List[str]:
+    base = _image_prompt_from_chapter(title, chapter_text, style_hint)
+    prompts = []
+    for i in range(1, n+1):
+        prompts.append(f"{base} Depict key moment {i}.")
+    return prompts
+
 # gpt-image-1 valid sizes only
 def _image_size(aspect: str) -> str:
     a = (aspect or "square").lower()
@@ -174,34 +194,26 @@ def _placeholder_svg(title: str, w: int, h: int) -> str:
 </svg>"""
 
 def _gen_image_to_file(prompt: str, aspect: str, dest_stem: Path) -> Path:
-    """
-    Generate PNG via gpt-image-1 (returns b64_json by default).
-    On any error or if the model isn't available, fall back to an SVG placeholder.
-    """
+    """Generate PNG via gpt-image-1 (b64), fallback to SVG placeholder."""
     w, h = _image_size_px(aspect)
     dest_stem.parent.mkdir(parents=True, exist_ok=True)
-
     try:
         if client is None or not OPENAI_IMAGE_MODEL:
             raise RuntimeError("Images API not configured")
-
         resp = client.images.generate(
             model=OPENAI_IMAGE_MODEL,
             prompt=prompt,
-            size=_image_size(aspect),   # 1024x1024 | 1024x1536 | 1536x1024
+            size=_image_size(aspect),
             quality="high",
-            # no response_format; gpt-image-1 returns b64_json by default
         )
         datum = resp.data[0] if getattr(resp, "data", None) else None
         b64 = getattr(datum, "b64_json", None)
         if not isinstance(b64, str) or not b64.strip():
             raise ValueError("No b64_json in image response")
-
         out = dest_stem.with_suffix(".png")
         with open(out, "wb") as f:
             f.write(base64.b64decode(b64))
         return out
-
     except Exception as e:
         print(f"⚠️ Image API failed, using placeholder: {e}")
         out = dest_stem.with_suffix(".svg")
@@ -248,7 +260,6 @@ def generate_story(req: StoryRequest):
     title = _title_from_prompt(req.prompt, req.age_range)
     chapter_prompts = _chapter_prompts(req.prompt, req.style, req.chapters)
     chapters: List[str] = []
-
     try:
         for cp in chapter_prompts:
             resp = client.chat.completions.create(
@@ -282,29 +293,18 @@ def delete_story(story_id: str):
 
 # ---- Images ----
 @app.post("/images", response_model=ImageResponse, tags=["Images"])
-def generate_image(req: ImageRequest, request: Request):
+def generate_image(req: ImageRequest):
     tmp_dir = DATA_ROOT / "tmp"
     dest_stem = tmp_dir / str(uuid.uuid4())
     abs_path = _gen_image_to_file(req.prompt.strip(), req.aspect, dest_stem)
     rel = Path(abs_path).relative_to(DATA_ROOT)
-    rel_url = f"/media/{rel.as_posix()}"
+    return ImageResponse(image_url=f"/media/{rel.as_posix()}")
 
-    # Build absolute URL from the incoming request
-    base_url = str(request.base_url).rstrip("/")
-    absolute_url = f"{base_url}{rel_url}"
-
-    # Helpful logs
-    print(f"🖼️ Saved image  → {abs_path}")
-    print(f"🌐 Open this URL → {absolute_url}")
-
-    return ImageResponse(image_url=rel_url, absolute_url=absolute_url)
-
-# ---- Books ----
+# ---- Books (LEGACY, one image per chapter) ----
 @app.post("/books", response_model=BookResponse, tags=["Books"])
 def generate_book(req: BookRequest):
     story = generate_story(req.story)
     urls: Optional[List[str]] = None
-
     if req.images:
         book_id = str(uuid.uuid4())
         book_dir = DATA_ROOT / "books" / book_id
@@ -318,32 +318,79 @@ def generate_book(req: BookRequest):
         final_id = book_id
     else:
         final_id = str(uuid.uuid4())
-
     return BookResponse(id=final_id, title=story.title, chapters=story.chapters, image_urls=urls)
+
+# ---- NEW: Compose multi-image book & save book.json ----
+@app.post("/books/compose", response_model=BookComposeResponse, tags=["Books"])
+def compose_book(req: BookComposeRequest):
+    # First, generate the full story text
+    s = generate_story(req.story)
+    book_id = str(uuid.uuid4())
+    book_dir = DATA_ROOT / "books" / book_id
+    book_dir.mkdir(parents=True, exist_ok=True)
+
+    pages: List[Page] = []
+    cover_url: Optional[str] = None
+
+    for idx, ch_text in enumerate(s.chapters, start=1):
+        prompts = _image_prompts_for_chapter(s.title, ch_text, req.story.style, req.images_per_chapter)
+        urls: List[str] = []
+        for j, pmt in enumerate(prompts, start=1):
+            dest = book_dir / f"ch{idx:02d}_img{j}"
+            abs_path = _gen_image_to_file(pmt, "square", dest)
+            rel = abs_path.relative_to(DATA_ROOT).as_posix()
+            urls.append(f"/media/{rel}")
+            if cover_url is None:
+                cover_url = f"/media/{rel}"
+        pages.append(Page(chapter_index=idx-1, text=ch_text, image_urls=urls))
+
+    # Persist metadata so we can reopen later
+    meta = {
+        "id": book_id,
+        "title": s.title,
+        "pages": [page.dict() for page in pages],
+        "cover_url": cover_url,
+        "created_at": int(time.time()),
+    }
+    with open(book_dir / "book.json", "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
+
+    return BookComposeResponse(id=book_id, title=s.title, pages=pages, cover_url=cover_url)
+
+@app.get("/books/{book_id}", response_model=BookComposeResponse, tags=["Books"])
+def read_book(book_id: str):
+    book_file = DATA_ROOT / "books" / book_id / "book.json"
+    if not book_file.exists():
+        raise HTTPException(status_code=404, detail="Book not found")
+    with open(book_file, "r", encoding="utf-8") as f:
+        meta = json.load(f)
+    # Validate/reshape to response model
+    return BookComposeResponse(
+        id=meta["id"],
+        title=meta["title"],
+        pages=[Page(**p) for p in meta["pages"]],
+        cover_url=meta.get("cover_url"),
+    )
 
 # ---- Debug helpers ----
 @app.get("/debug/media")
 def debug_media():
-    """List files under DATA_ROOT and show the active media root."""
     items = []
     for p in DATA_ROOT.rglob("*"):
         if p.is_file():
             rel = p.relative_to(DATA_ROOT).as_posix()
             items.append({"url": f"/media/{rel}", "bytes": p.stat().st_size})
-    # sort newest first
-    try:
-        items.sort(
-            key=lambda x: (DATA_ROOT / x["url"].replace("/media/", "")).stat().st_mtime
-            if (DATA_ROOT / x["url"].replace("/media/", "")).exists() else 0,
-            reverse=True
-        )
-    except Exception:
-        pass
+    # recent first
+    def mtime(item):
+        try:
+            return (DATA_ROOT / item["url"].replace("/media/", "")).stat().st_mtime
+        except Exception:
+            return 0
+    items.sort(key=mtime, reverse=True)
     return {"root": str(DATA_ROOT), "count": len(items), "items": items[:200]}
 
 @app.get("/debug/read")
-def debug_read_media(path: str = Query(..., description="Path relative to /media, e.g. tmp/abc.png or books/<id>/page_01.png")):
-    """Confirm a specific file exists under DATA_ROOT."""
+def debug_read_media(path: str = Query(..., description="Path relative to /media, e.g. tmp/abc.png or books/<id>/ch01_img1.png")):
     p = Path(path)
     if p.is_absolute() or ".." in p.parts:
         raise HTTPException(status_code=400, detail="bad path")
