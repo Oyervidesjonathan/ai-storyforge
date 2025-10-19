@@ -1,156 +1,362 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <title>AI StoryForge — Pro Editor</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <style>
-    :root{
-      --bg1:#fff7ed; --bg2:#fef3c7; --ink:#222; --muted:#666;
-      --card:#ffffff; --border:#eee; --shadow:0 10px 30px rgba(0,0,0,.08);
-      --pill:#f3f4f6;
-    }
-    html,body{ height:100%; }
-    body{
-      font-family:Arial, sans-serif; margin:0; color:var(--ink);
-      background: radial-gradient(1200px 600px at 20% -10%, var(--bg1), transparent 60%),
-                  radial-gradient(1200px 600px at 120% 10%, var(--bg2), transparent 60%),
-                  #faf6f2;
-    }
-    header{
-      padding:14px 16px; background:rgba(255,255,255,.85);
-      backdrop-filter: blur(6px); border-bottom:1px solid var(--border);
-      position:sticky; top:0; z-index:3; display:flex; gap:12px; align-items:center;
-    }
-    h1{ font-size:18px; margin:0; }
-    .badge{ background:var(--pill); padding:4px 8px; border-radius:999px; font-size:12px; color:#444; }
-    main{ padding:16px; display:grid; grid-template-columns: 300px 1fr 420px; gap:16px; }
-    @media (max-width:1200px){ main{ grid-template-columns: 1fr; } }
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>StoryForge • Pro Editor</title>
+<style>
+  /* ================= THEME ================= */
+  :root{
+    --ink:#1c1a1a;
+    --muted:#6e6762;
+    --cream:#fbf6ef;
+    --card:rgba(255,255,255,0.82);
+    --glass:rgba(255,255,255,0.66);
+    --border:rgba(0,0,0,0.06);
+    --accent:#1e293b;
+    --accent-2:#0f172a;
+    --good:#17a34a;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; color:var(--ink); font-family: ui-sans-serif,-apple-system,Segoe UI,Roboto,Helvetica,Arial,Apple Color Emoji,Segoe UI Emoji;
+    background:
+      radial-gradient(1200px 600px at 10% -10%, #f59e0b33 0%, transparent 60%),
+      radial-gradient(1200px 700px at 110% -10%, #ef444433 0%, transparent 60%),
+      radial-gradient(1400px 700px at 50% 120%, #10b9812b 0%, transparent 65%),
+      linear-gradient(180deg,#2b1e1a,#1a1413 30%, #120f0e 100%);
+    overflow-y:auto;
+  }
+  .vignette::before{
+    content:""; position:fixed; inset:-10vmax; pointer-events:none;
+    background: radial-gradient(1200px 800px at 50% -10%, transparent, transparent 60%, rgba(0,0,0,.28) 100%);
+    z-index:0;
+  }
+  .shell{
+    position:relative; z-index:1; padding:18px 18px 32px;
+    max-width: 1400px; margin:0 auto;
+  }
 
-    .card{ background:var(--card); border:1px solid var(--border); border-radius:14px; box-shadow:var(--shadow); }
-    .card h3{ margin:0; padding:12px 14px; border-bottom:1px solid var(--border); font-size:15px; }
-    .card .body{ padding:12px 14px; }
+  /* Header */
+  .bar{
+    display:flex; align-items:center; gap:12px; color:#fff; padding:6px 4px 18px 4px;
+  }
+  .brand{display:flex; align-items:center; gap:10px; font-weight:800; letter-spacing:.5px;}
+  .brand .logo{
+    width:22px; height:22px; display:grid; place-items:center;
+    background:linear-gradient(135deg,#f59e0b,#ef4444); border-radius:6px; box-shadow:0 6px 18px #ef444466;
+  }
+  .brand small{opacity:.85; font-weight:600}
+  .spacer{flex:1}
+  .btn{
+    appearance:none; border:1px solid rgba(255,255,255,.2); color:#fff;
+    background:linear-gradient(180deg,#334155,#0f172a); padding:8px 12px; border-radius:12px; cursor:pointer;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.12), 0 6px 16px rgba(0,0,0,.35);
+  }
+  .btn:hover{filter:brightness(1.05)}
+  .btn-alt{background:transparent; border-color:rgba(255,255,255,.3)}
 
-    select, textarea, input{ width:100%; font-size:14px; padding:10px; border:1px solid #ddd; border-radius:10px; box-sizing:border-box; }
-    textarea{ min-height:240px; }
-    button{ background:#222; color:#fff; border:none; border-radius:10px; padding:10px 14px; cursor:pointer; }
-    button[disabled]{ opacity:.5; cursor:not-allowed; }
-    .muted{ color:var(--muted); }
-    .row{ display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  /* Layout cards */
+  .grid{
+    display:grid; gap:18px;
+    grid-template-columns: 280px minmax(440px, 1fr) 420px;
+  }
+  .card{
+    background:var(--card); backdrop-filter: blur(12px);
+    border:1px solid var(--border); border-radius:18px; box-shadow: 0 14px 40px rgba(0,0,0,.18);
+  }
+  .panel{ padding:16px 16px 18px; }
+  .panel h3{ margin:2px 0 10px; font-size:14px; letter-spacing:.4px; color:#111; }
+  label{ display:block; font-size:12px; color:var(--muted); margin:6px 0 4px; }
+  input[type="text"], select, textarea{
+    width:100%; border:1px solid var(--border); background:var(--glass);
+    padding:10px 12px; border-radius:12px; outline:none;
+  }
+  textarea{min-height:340px; resize:vertical; background:rgba(255,255,255,.74)}
+  .row{display:flex; align-items:center; gap:10px}
+  .mt8{margin-top:8px}
+  .mt12{margin-top:12px}
+  .muted{color:var(--muted); font-size:12px}
 
-    /* Gallery + Big Preview */
-    .gallery{ display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; }
-    .thumb{ background:#fff; border:1px solid #ddd; border-radius:12px; padding:6px; cursor:pointer; }
-    .thumb img{ width:100%; height:120px; object-fit:cover; border-radius:8px; display:block; }
-    .thumb.sel{ outline:3px solid #666; }
+  /* Right images pane */
+  .thumbs{
+    display:grid; grid-template-columns: repeat(auto-fill, minmax(84px,1fr)); gap:8px;
+    max-height: 168px; overflow:auto; padding-bottom:4px;
+  }
+  .thumb{
+    border:1px solid var(--border); border-radius:12px; overflow:hidden; cursor:pointer; background:#fff;
+    box-shadow:0 6px 12px rgba(0,0,0,.06);
+  }
+  .thumb img{ width:100%; height:84px; object-fit:cover; display:block; }
+  .thumb.active{ outline:3px solid #f59e0b; }
 
-    .preview{
-      background:#fff; border:1px solid var(--border); border-radius:14px; box-shadow:var(--shadow);
-      display:flex; align-items:center; justify-content:center; min-height:360px; padding:12px;
-    }
-    .preview img{ max-width:100%; max-height:620px; width:auto; height:auto; object-fit:contain; border-radius:12px; display:block; }
+  .preview{
+    margin-top:10px; background:#fff; border:1px solid var(--border); border-radius:16px; overflow:hidden;
+    height: 340px; display:grid; place-items:center;
+  }
+  .preview img{ max-width:100%; max-height:100%; display:block; object-fit:contain }
+  .preview-empty{color:#bbb; font-size:14px}
 
-    /* Modal */
-    dialog { border:none; border-radius:14px; padding:0; box-shadow:0 20px 50px rgba(0,0,0,.25); width:100%; max-width:560px; }
-    dialog::backdrop{ background:rgba(0,0,0,.35); }
-    .modal-h { padding:14px 16px; border-bottom:1px solid var(--border); font-weight:700; }
-    .modal-b { padding:16px; display:grid; grid-template-columns:1fr 1fr; gap:12px; }
-    .modal-b label{ font-size:.9em; color:#444; }
-    .modal-b select { width:100%; padding:10px; }
-    .modal-f { padding:14px 16px; border-top:1px solid var(--border); display:flex; justify-content:flex-end; gap:8px; }
-    .btn-ghost{ background:#eee; color:#222; }
-    .btn-ghost:hover{ background:#e3e3e3; }
-  </style>
+  .pill{
+    display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border-radius:100px; font-size:12px;
+    background:rgba(255,255,255,.6); border:1px solid var(--border);
+  }
+
+  /* ============== Modal (Format) ============== */
+  .modal-back{
+    position:fixed; inset:0; background:rgba(0,0,0,.45); display:none; align-items:center; justify-content:center; z-index:30;
+  }
+  .modal{ width: 560px; max-width:calc(100% - 32px) }
+  .modal .panel{ padding:18px }
+  .modal .row{ justify-content:space-between }
+  .modal .grid2{ display:grid; grid-template-columns: 1fr 1fr; gap:10px }
+  .badge{display:inline-block; padding:2px 8px; border-radius:999px; background:#0ea5e9; color:#fff; font-size:12px}
+
+  /* Tiny top status */
+  .led{width:8px;height:8px;border-radius:999px;background:linear-gradient(#16a34a,#15803d); box-shadow:0 0 0 3px rgba(22,163,74,.25)}
+</style>
 </head>
-<body>
-  <header>
-    <h1>📘 Pro Editor</h1>
-    <span id="hdrTitle" class="badge"></span>
-    <span style="flex:1"></span>
-    <a href="/ui"><button class="btn-ghost">← Back</button></a>
-    <button id="btnFormat" title="Format for KDP">🧩 Format</button>
-  </header>
-
-  <main>
-    <!-- Book / chapter -->
-    <section class="card">
-      <h3>Book & Chapter</h3>
-      <div class="body">
-        <label class="muted">Book ID</label>
-        <input id="bookId" readonly />
-        <div style="height:10px"></div>
-        <label>Chapter</label>
-        <select id="chapSelect"></select>
+<body class="vignette">
+  <div class="shell">
+    <div class="bar">
+      <div class="brand">
+        <div class="logo">📖</div>
+        <div>StoryForge <small>Pro Editor</small></div>
+        <span class="pill"><span class="led"></span> live</span>
       </div>
-    </section>
-
-    <!-- Text -->
-    <section class="card">
-      <h3>Chapter Text</h3>
-      <div class="body">
-        <label class="muted">Text (Markdown)</label>
-        <textarea id="chapterText"></textarea>
-        <div style="height:10px"></div>
-        <button id="btnSaveText">💾 Save Text</button>
-        <span id="saveStatus" class="muted"></span>
-      </div>
-    </section>
-
-    <!-- Images -->
-    <section class="card">
-      <h3>Images</h3>
-      <div class="body">
-        <div id="bigPreview" class="preview"><span class="muted">Select a thumbnail to preview</span></div>
-        <div style="height:12px"></div>
-        <div id="gallery" class="gallery"></div>
-        <div style="height:10px"></div>
-        <label>Image edit prompt</label>
-        <textarea id="editPrompt" placeholder="e.g., make the dragon a bit smaller, add moonlight"></textarea>
-        <div style="height:10px"></div>
-        <button id="btnApplyEdit" disabled>Apply to selected</button>
-        <span id="imgStatus" class="muted"></span>
-      </div>
-    </section>
-  </main>
-
-  <!-- KDP Options Modal -->
-  <dialog id="formatModal">
-    <div class="modal-h">Format for KDP</div>
-    <div class="modal-b">
-      <label>Trim size
-        <select id="optTrim">
-          <option value="8.5x8.5" selected>8.5" × 8.5" (square)</option>
-          <option value="8x10">8" × 10"</option>
-          <option value="7x10">7" × 10"</option>
-        </select>
-      </label>
-      <label>Bleed
-        <select id="optBleed">
-          <option value="no" selected>No</option>
-          <option value="yes">Yes (0.125")</option>
-        </select>
-      </label>
-      <label>Font
-        <select id="optFont">
-          <option value="Literata" selected>Literata</option>
-          <option value="Georgia">Georgia</option>
-          <option value="Atkinson Hyperlegible">Atkinson Hyperlegible</option>
-        </select>
-      </label>
-      <label>Line height
-        <select id="optLH">
-          <option value="1.4">1.4</option>
-          <option value="1.6" selected>1.6</option>
-          <option value="1.8">1.8</option>
-        </select>
-      </label>
-      <label style="grid-column:1 / -1;">Background style
-        <select id="optBG">
-          <option value="blur" selected>Plain (clean)</option>
-          <option value="tint">Tinted text box</option>
-        </select>
-      </label>
-      <p class="muted" style="grid-column:1 / -1;margin:4px 0 0 0;">Tip: Keep text 0.375" from the trim line.</p>
+      <div class="spacer"></div>
+      <button id="btnBack" class="btn btn-alt" onclick="history.back()">← Back</button>
+      <button id="btnFormat" class="btn">✳️ Format</button>
     </div>
-    <div class="modal-f">
-      <button id="btnFmtCancel" c
+
+    <div class="grid">
+      <!-- Sidebar -->
+      <div class="card panel">
+        <h3>Book & Chapter</h3>
+        <label>Book ID</label>
+        <input id="bookId" type="text" placeholder="paste or use ?book=" />
+        <label class="mt8">Chapter</label>
+        <select id="chapterSel"></select>
+        <div class="mt12 muted" id="sideMeta"></div>
+      </div>
+
+      <!-- Text editor -->
+      <div class="card panel">
+        <h3>Chapter Text</h3>
+        <label>Text (Markdown)</label>
+        <textarea id="chapterText" placeholder="Write or edit the story for this chapter..."></textarea>
+        <div class="row mt8">
+          <button id="btnSave" class="btn">💾 Save Text</button>
+          <span id="saveStatus" class="muted"></span>
+        </div>
+      </div>
+
+      <!-- Images panel -->
+      <div class="card panel">
+        <h3>Images</h3>
+        <div id="thumbs" class="thumbs"></div>
+        <div id="preview" class="preview"><div class="preview-empty">Select a thumbnail to preview</div></div>
+
+        <label class="mt12">Image edit prompt</label>
+        <textarea id="imgPrompt" rows="4" placeholder="e.g., make the dragon a bit smaller, add moonlight"></textarea>
+        <div class="row mt8">
+          <button id="btnApply" class="btn">Apply to selected</button>
+          <span id="imgStatus" class="muted"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- =================== FORMAT MODAL =================== -->
+  <div id="modalBack" class="modal-back">
+    <div class="modal card">
+      <div class="panel">
+        <div class="row" style="margin-bottom:8px;">
+          <h3 style="margin:0">Format for KDP <span class="badge">PDF</span></h3>
+          <button class="btn btn-alt" onclick="closeModal()">✖</button>
+        </div>
+        <div class="grid2">
+          <div>
+            <label>Trim</label>
+            <select id="optTrim">
+              <option>8.5x8.5</option>
+              <option>8x10</option>
+              <option>7x10</option>
+            </select>
+          </div>
+          <div>
+            <label>Bleed (adds 0.125")</label>
+            <select id="optBleed">
+              <option value="no">no</option>
+              <option value="yes">yes</option>
+            </select>
+          </div>
+          <div>
+            <label>Font</label>
+            <select id="optFont">
+              <option>Literata</option>
+              <option>Georgia</option>
+              <option>Times New Roman</option>
+              <option>Palatino</option>
+            </select>
+          </div>
+          <div>
+            <label>Line height</label>
+            <input id="optLH" type="text" value="1.6"/>
+          </div>
+          <div>
+            <label>Background style</label>
+            <select id="optBG">
+              <option value="tint">warm tint</option>
+              <option value="blur">soft blur</option>
+            </select>
+          </div>
+        </div>
+        <div class="row mt12">
+          <button class="btn" id="btnDoFormat">Generate PDF</button>
+          <span id="fmtStatus" class="muted"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+const API = location.origin;
+
+/* ============== helpers ============== */
+const qs = (s, p=document)=>p.querySelector(s);
+const qsa = (s,p=document)=>Array.from(p.querySelectorAll(s));
+function getParam(name){
+  const u = new URL(location.href);
+  return u.searchParams.get(name) || "";
+}
+function toast(target, msg){ target.textContent = msg; setTimeout(()=>target.textContent="", 1600); }
+
+/* ============== state ============== */
+let BOOK_ID = getParam('book') || "";
+let CHAPTER_COUNT = 0;
+let CUR_CHAPTER = 1;
+let chapterImages = []; // current chapter images
+let selectedImageIdx = -1;
+
+/* ============== wiring ============== */
+qs('#bookId').value = BOOK_ID;
+qs('#bookId').addEventListener('change', () => {
+  BOOK_ID = qs('#bookId').value.trim();
+  if (BOOK_ID) loadMetaAndChapters(BOOK_ID);
+});
+
+qs('#chapterSel').addEventListener('change', (e)=>{
+  CUR_CHAPTER = parseInt(e.target.value,10) || 1;
+  loadChapter(CUR_CHAPTER);
+});
+
+qs('#btnSave').addEventListener('click', async ()=>{
+  if (!BOOK_ID) return;
+  const markdown = qs('#chapterText').value;
+  const r = await fetch(`${API}/books/${BOOK_ID}/chapter/${CUR_CHAPTER}`,{
+    method:'PUT', headers:{'content-type':'application/json'},
+    body: JSON.stringify({ chapter_index: CUR_CHAPTER-1, markdown })
+  });
+  toast(qs('#saveStatus'), r.ok ? 'Saved ✓' : 'Failed');
+});
+
+qs('#btnApply').addEventListener('click', async ()=>{
+  if (!BOOK_ID || selectedImageIdx < 0) return;
+  const prompt = qs('#imgPrompt').value.trim();
+  if (!prompt) { alert('Enter an edit prompt first.'); return; }
+  qs('#imgStatus').textContent = 'Updating…';
+  const r = await fetch(`${API}/books/${BOOK_ID}/edit-image`,{
+    method:'POST', headers:{'content-type':'application/json'},
+    body: JSON.stringify({ chapter_index: CUR_CHAPTER-1, image_index: selectedImageIdx, prompt })
+  });
+  qs('#imgStatus').textContent = r.ok ? 'Updated ✓ (may take a moment)' : 'Failed';
+  if (r.ok) loadChapter(CUR_CHAPTER);
+  setTimeout(()=>qs('#imgStatus').textContent='',1500);
+});
+
+/* ============== format modal ============== */
+qs('#btnFormat').addEventListener('click', ()=>{
+  if (!BOOK_ID) { alert('Enter a Book ID first.'); return; }
+  openModal();
+});
+qs('#btnDoFormat').addEventListener('click', doFormat);
+
+function openModal(){ qs('#modalBack').style.display='flex'; }
+function closeModal(){ qs('#modalBack').style.display='none'; }
+
+/* ============== data loaders ============== */
+async function loadMetaAndChapters(bookId){
+  // read the book JSON from media to count pages + title
+  const meta = await fetch(`${API}/media/books/${bookId}/book.json?ts=${Date.now()}`,{cache:'no-store'}).then(r=>r.json());
+  CHAPTER_COUNT = (meta.pages || []).length;
+  qs('#sideMeta').textContent = meta.title || '';
+  const sel = qs('#chapterSel');
+  sel.innerHTML = "";
+  for (let i=1;i<=CHAPTER_COUNT;i++){
+    const o = document.createElement('option'); o.value=i; o.textContent = `Chapter ${i}`; sel.appendChild(o);
+  }
+  CUR_CHAPTER = 1;
+  sel.value = "1";
+  await loadChapter(1);
+}
+
+async function loadChapter(n){
+  const r = await fetch(`${API}/books/${BOOK_ID}/chapter/${n}?t=${Date.now()}`, {cache:'no-store'});
+  const data = await r.json();
+  qs('#chapterText').value = data.text || '';
+  chapterImages = Array.isArray(data.images) ? data.images : [];
+  renderThumbs();
+  renderPreview(-1);
+}
+
+function renderThumbs(){
+  const g = qs('#thumbs'); g.innerHTML = '';
+  chapterImages.forEach((url, i)=>{
+    const b = document.createElement('button');
+    b.className = 'thumb';
+    b.innerHTML = `<img src="${url}" alt="thumb ${i+1}">`;
+    b.onclick = ()=>{ selectedImageIdx = i; qsa('.thumb',g).forEach(x=>x.classList.remove('active')); b.classList.add('active'); renderPreview(i); };
+    g.appendChild(b);
+  });
+}
+
+function renderPreview(i){
+  const p = qs('#preview');
+  p.innerHTML = '';
+  if (i<0){ const d=document.createElement('div'); d.className='preview-empty'; d.textContent='Select a thumbnail to preview'; p.appendChild(d); return; }
+  const img = new Image(); img.src = chapterImages[i]; img.alt = 'preview';
+  p.appendChild(img);
+}
+
+/* ============== format action ============== */
+async function doFormat(){
+  const payload = {
+    trim: qs('#optTrim').value,
+    bleed: qs('#optBleed').value === 'yes',
+    font: qs('#optFont').value,
+    line_height: parseFloat(qs('#optLH').value) || 1.6,
+    bg_style: qs('#optBG').value
+  };
+  qs('#fmtStatus').textContent = 'Formatting…';
+  const r = await fetch(`${API}/books/${BOOK_ID}/format`,{
+    method:'POST', headers:{'content-type':'application/json'},
+    body: JSON.stringify(payload)
+  });
+  const j = await r.json().catch(()=>({}));
+  if (r.ok && j.pdf_url){
+    const a = document.createElement('a'); a.href = j.pdf_url; a.download = '';
+    document.body.appendChild(a); a.click(); a.remove();
+    qs('#fmtStatus').textContent = 'Done ✓';
+    setTimeout(closeModal, 400);
+  } else {
+    qs('#fmtStatus').textContent = 'Failed';
+  }
+}
+
+/* ============== boot ============== */
+if (BOOK_ID) loadMetaAndChapters(BOOK_ID);
+</script>
+</body>
+</html>
