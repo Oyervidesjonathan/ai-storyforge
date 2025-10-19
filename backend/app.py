@@ -518,3 +518,67 @@ def _log_routes():
     for p in paths:
         if p:
             print("  •", p)
+
+# ==== BOOK SHELF LISTING (safe, non-conflicting aliases) ====
+from pathlib import Path
+import json, time
+
+BOOKS_DIR = (DATA_ROOT / "books")
+IMG_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".svg")
+
+def _as_media_url(p: Path) -> str:
+    return f"/media/{p.relative_to(DATA_ROOT).as_posix()}"
+
+def _list_images(d: Path):
+    return sorted([f for f in d.iterdir() if f.is_file() and f.suffix.lower() in IMG_EXTS])
+
+def _dir_mtime(p: Path) -> int:
+    try:
+        return int(max((f.stat().st_mtime for f in p.glob("**/*") if f.is_file()), default=p.stat().st_mtime))
+    except Exception:
+        return int(time.time())
+
+def _scan_books():
+    items = []
+    if not BOOKS_DIR.exists():
+        return items
+    for sub in BOOKS_DIR.iterdir():
+        if not sub.is_dir():
+            continue
+        meta = None
+        jf = sub / "book.json"
+        if jf.exists():
+            try:
+                meta = json.loads(jf.read_text(encoding="utf-8"))
+                items.append({
+                    "id": meta.get("id", sub.name),
+                    "title": meta.get("title", f"Book {sub.name}"),
+                    "pages": len(meta.get("pages", [])),
+                    "cover_url": meta.get("cover_url"),
+                    "created_at": meta.get("created_at", _dir_mtime(sub)),
+                    "source": "json",
+                })
+                continue
+            except Exception as e:
+                print(f"⚠️ bad book.json in {sub}: {e}")
+        # legacy image-only folder
+        imgs = _list_images(sub)
+        if imgs:
+            items.append({
+                "id": sub.name,
+                "title": f"Book {sub.name}",
+                "pages": len(imgs),
+                "cover_url": _as_media_url(imgs[0]),
+                "created_at": _dir_mtime(sub),
+                "source": "legacy",
+            })
+    items.sort(key=lambda x: x.get("created_at", 0), reverse=True)
+    print(f"📚 Shelf: {len(items)} items (json={sum(i['source']=='json' for i in items)}, legacy={sum(i['source']=='legacy' for i in items)})")
+    return items
+
+@app.get("/bookshelf")
+@app.get("/books/list/")   # safe: trailing slash so it won't be captured by /books/{book_id}
+@app.get("/books")         # GET = list; POST /books remains your creator
+def list_books():
+    return _scan_books()
+
