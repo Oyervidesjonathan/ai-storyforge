@@ -423,3 +423,78 @@ def edit_book_image(book_id: str, req: ImageEditReq):
 
     return {"ok": True, "book_id": book_id, "chapter_index": req.chapter_index,
             "image_index": req.image_index, "url": current_url}
+
+    # === BEGIN: fallback edit endpoints (direct on app) ===
+from pydantic import BaseModel
+from fastapi import HTTPException
+from pathlib import Path
+import json, time, uuid, os
+
+from .routers.books import DATA_ROOT, BOOKS_DIR, _gen_image_to_file  # reuse helpers
+
+class ChapterTextPatch(BaseModel):
+    chapter_index: int
+    markdown: str
+
+class ImageEditReq(BaseModel):
+    chapter_index: int
+    image_index: int
+    prompt: str
+
+def _book_json_path(book_id: str) -> Path:
+    return (BOOKS_DIR / book_id) / "book.json"
+
+def _load_book_json(book_id: str) -> dict:
+    jf = _book_json_path(book_id)
+    if not jf.exists():
+        raise HTTPException(status_code=404, detail="book.json not found")
+    return json.loads(jf.read_text(encoding="utf-8"))
+
+def _save_book_json(book_id: str, data: dict) -> None:
+    jf = _book_json_path(book_id)
+    jf.parent.mkdir(parents=True, exist_ok=True)
+    jf.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+def _media_url_to_abs(media_url: str) -> Path:
+    if not media_url.startswith("/media/"):
+        raise HTTPException(status_code=400, detail="expected a /media/... url")
+    rel = media_url[len("/media/"):]
+    return DATA_ROOT / rel
+
+@app.put("/books/{book_id}/edit-text", tags=["Books"])
+def _edit_book_text(book_id: str, patch: ChapterTextPatch):
+    meta = _load_book_json(book_id)
+    pages = meta.get("pages", [])
+    if patch.chapter_index < 0 or patch.chapter_index >= len(pages):
+        raise HTTPException(status_code=400, detail="invalid chapter index")
+    pages[patch.chapter_index]["text"] = patch.markdown
+    meta["last_modified"] = int(time.time())
+    _save_book_json(book_id, meta)
+    return {"ok": True, "book_id": book_id, "chapter_index": patch.chapter_index}
+
+@app.post("/books/{book_id}/edit-image", tags=["Books"])
+def _edit_book_image(book_id: str, req: ImageEditReq):
+    meta = _load_book_json(book_id)
+    pages = meta.get("pages", [])
+    if req.chapter_index < 0 or req.chapter_index >= len(pages):
+        raise HTTPException(status_code=400, detail="invalid chapter index")
+    page = pages[req.chapter_index]
+    img_urls = page.get("image_urls", [])
+    if req.image_index < 0 or req.image_index >= len(img_urls):
+        raise HTTPException(status_code=400, detail="invalid image index")
+
+    current_url = img_urls[req.image_index]
+    abs_path = _media_url_to_abs(current_url)
+    abs_path.parent.mkdir(parents=True, exist_ok=True)
+
+    tmp_stem = abs_path.parent / f"_tmp_{uuid.uuid4().hex}"
+    out_tmp = _gen_image_to_file(req.prompt.strip(), "square", tmp_stem)
+    os.replace(out_tmp, abs_path)
+
+    meta["last_modified"] = int(time.time())
+    page.setdefault("image_edits", {})
+    page["image_edits"][str(req.image_index)] = {"last_prompt": req.prompt, "ts": meta["last_modified"]}
+    _save_book_json(book_id, meta)
+    return {"ok": True, "book_id": book_id, "chapter_index": req.chapter_index, "image_index": req.image_index, "url": current_url}
+# === END: fallback edit endpoints ===
+
