@@ -7,7 +7,7 @@
   <style>
     :root{
       --bg:#faf6f2; --ink:#333; --muted:#666; --card:#fff; --shadow:0 2px 4px rgba(0,0,0,0.1);
-      --accent:#333; --accent-2:#555; --border:#eee;
+      --accent:#333; --accent-2:#555; --border:#eee; --cream:#fbf6ef;
     }
     *{ box-sizing:border-box; }
     body { font-family: Arial, sans-serif; background: var(--bg); color: var(--ink); padding: 20px; }
@@ -15,17 +15,20 @@
     h2 { margin: 0 0 10px 0; }
 
     /* ===== Common ===== */
+    .row { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
     .card { background:var(--card); padding:20px; margin-top:20px; border-radius:8px; box-shadow:var(--shadow); }
     .muted { color:var(--muted); font-size: 0.95em; }
     .btn { background:var(--accent); color:#fff; border:none; border-radius:8px; padding:8px 12px; cursor:pointer; }
     .btn:hover{ background:var(--accent-2); }
+    .btn-ghost{ background:#eee; color:#222; }
+    .btn-ghost:hover{ background:#e3e3e3; }
     .hr { height:1px; background:var(--border); margin:16px 0; }
     .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap:12px; }
     .thumb { border:1px solid var(--border); border-radius:8px; overflow:hidden; box-shadow:0 2px 4px rgba(0,0,0,0.08); background:#fff; }
     .thumb img { display:block; width:100%; height:auto; }
     .empty { color:#666; text-align:center; padding:18px 8px; }
 
-    /* ===== Stories (unchanged styles) ===== */
+    /* ===== Stories ===== */
     .story-list { display: flex; flex-direction: column; gap: 10px; margin-top: 20px; }
     .story-card { padding: 12px; background: white; border-radius: 8px; box-shadow: var(--shadow); cursor: pointer; position: relative; }
     .story-card:hover { background: #f1ece7; }
@@ -50,7 +53,7 @@
     .book-form .field label{ display:block; font-weight:600; margin-bottom:4px; }
     .book-form textarea,.book-form input,.book-form select{ width:100%; padding:8px; font-size:1em; }
     #b-prompt{ min-height:56px; resize:vertical; }
-    .book-actions{ grid-column:1 / -1; display:flex; gap:12px; align-items:center; }
+    .book-actions{ grid-column:1 / -1; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
 
     @media (max-width: 980px){
       .book-form{ grid-template-columns: 1fr; }
@@ -89,13 +92,22 @@
     .right-page { display:flex; align-items:center; justify-content:center; background: #fafafa; }
     .right-page img { width:100%; height:auto; object-fit:contain; }
     .viewer-toolbar{
-      margin-top:10px; display:flex; align-items:center; justify-content:space-between; gap:12px;
+      margin-top:10px; display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;
     }
     .viewer-meta{ color:#555; font-size:.95em; }
 
     /* ===== Edit view ===== */
     .img-card { border:1px solid var(--border); background:var(--card); box-shadow:var(--shadow); border-radius:10px; padding:6px; cursor:pointer; }
     .img-card.selected { outline:3px solid #888; }
+
+    /* ===== Modal ===== */
+    dialog { border:none; border-radius:12px; padding:0; box-shadow:0 20px 50px rgba(0,0,0,.25); width:100%; max-width:520px; }
+    dialog::backdrop{ background:rgba(0,0,0,.3); }
+    .modal-h { padding:14px 16px; border-bottom:1px solid var(--border); font-weight:700; }
+    .modal-b { padding:16px; display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+    .modal-b label{ font-size:.9em; color:#444; }
+    .modal-b select { width:100%; padding:8px; }
+    .modal-f { padding:14px 16px; border-top:1px solid var(--border); display:flex; justify-content:flex-end; gap:8px; }
   </style>
 </head>
 <body>
@@ -124,7 +136,12 @@
 
   <!-- =============== Book Builder =============== -->
   <div class="card" id="book-card">
-    <h2>Create an Illustrated Book</h2>
+    <div class="row">
+      <h2>Create an Illustrated Book</h2>
+      <div>
+        <button id="btnOpenEditor" class="btn-ghost" title="Open Pro Editor (new UI)">Open Pro Editor</button>
+      </div>
+    </div>
     <p class="muted">Generates a book and lays it out as a two-page spread (left text with soft background, right image). The book is saved to <code>/media/books/&lt;id&gt;/book.json</code>.</p>
 
     <div class="book-form">
@@ -159,9 +176,13 @@
     </div>
 
     <!-- Toolbar shown when a book is open -->
-    <div id="book-view-toolbar" style="display:none; margin: 8px 0 12px 0; gap: 8px;">
-      <button id="btnBackShelf" class="btn">← Back to Books</button>
-      <button id="btnEditBook" class="btn">Edit this book</button>
+    <div id="book-view-toolbar" class="row" style="display:none; margin: 8px 0 12px 0;">
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button id="btnBackShelf" class="btn">← Back to Books</button>
+        <button id="btnEditBook" class="btn">✏️ Edit this book</button>
+        <button id="btnFormatKDP" class="btn">🧩 Format for KDP</button>
+      </div>
+      <div class="muted" id="formatStatus"></div>
     </div>
 
     <!-- Live Book Viewer -->
@@ -185,8 +206,9 @@
           <span id="page-indicator">Page 1</span>
           <span id="book-title" style="margin-left:10px;"></span>
         </div>
-        <div>
-          <button id="open-json" class="btn">Open JSON</button>
+        <div style="display:flex; gap:8px;">
+          <button id="open-json" class="btn-ghost">Open JSON</button>
+          <a id="open-editor-link" class="btn-ghost" href="#" target="_blank" rel="noopener">Open in Pro Editor ↗</a>
         </div>
       </div>
     </div>
@@ -202,7 +224,7 @@
 
   <!-- =============== Edit View =============== -->
   <div class="card" id="edit-view" style="display:none; margin-top:12px;">
-    <div style="margin: 8px 0 12px 0; gap: 8px;">
+    <div style="margin: 8px 0 12px 0; display:flex; gap: 8px; flex-wrap:wrap;">
       <button class="btn" id="btnBackToBook">← Back to Book</button>
       <button class="btn" id="btnBackToShelf">← Back to Books</button>
     </div>
@@ -235,12 +257,59 @@
 
   <!-- =============== Media Gallery (optional) =============== -->
   <div class="card" id="media-card">
-    <h2>Media Gallery</h2>
+    <div class="row">
+      <h2>Media Gallery</h2>
+      <button id="btn-media-refresh" class="btn">🔄 Refresh</button>
+    </div>
     <p class="muted">Files from <code>/debug/media</code>. Click a thumbnail to open via <code>/media/…</code>.</p>
-    <button id="btn-media-refresh" class="btn">🔄 Refresh</button>
     <div id="media-list" class="grid"></div>
     <div id="media-empty" class="empty" style="display:none;">No media yet.</div>
   </div>
+
+  <!-- ====== Format for KDP Modal ====== -->
+  <dialog id="formatModal">
+    <div class="modal-h">Format for KDP</div>
+    <div class="modal-b">
+      <label>Trim size
+        <select id="optTrim">
+          <option value="8.5x8.5" selected>8.5" × 8.5" (square)</option>
+          <option value="8x10">8" × 10"</option>
+          <option value="7x10">7" × 10"</option>
+        </select>
+      </label>
+      <label>Bleed
+        <select id="optBleed">
+          <option value="no" selected>No</option>
+          <option value="yes">Yes (0.125")</option>
+        </select>
+      </label>
+      <label>Font
+        <select id="optFont">
+          <option value="Literata" selected>Literata</option>
+          <option value="Georgia">Georgia</option>
+          <option value="Atkinson Hyperlegible">Atkinson Hyperlegible</option>
+        </select>
+      </label>
+      <label>Line height
+        <select id="optLH">
+          <option value="1.4">1.4</option>
+          <option value="1.6" selected>1.6</option>
+          <option value="1.8">1.8</option>
+        </select>
+      </label>
+      <label style="grid-column:1 / -1;">Background style
+        <select id="optBG">
+          <option value="blur" selected>Blurred art on text page</option>
+          <option value="tint">Tinted cream</option>
+        </select>
+      </label>
+      <p class="muted" style="grid-column:1 / -1; margin:4px 0 0 0;">Tip: For full bleed, keep essential text > 0.375" from trim.</p>
+    </div>
+    <div class="modal-f">
+      <button id="btnFormatCancel" class="btn-ghost" type="button">Cancel</button>
+      <button id="btnDoFormat" class="btn" type="button">Build PDF</button>
+    </div>
+  </dialog>
 
   <script>
     const API_BASE = window.location.origin;
@@ -253,7 +322,7 @@
       const list = document.getElementById('story-list');
       list.innerHTML = '';
 
-      if (stories.length === 0) {
+      if (!stories || stories.length === 0) {
         list.innerHTML = '<p>No stories yet. Create one above 👆</p>';
         return;
       }
@@ -345,6 +414,8 @@
     const prevBtn = document.getElementById('prev');
     const nextBtn = document.getElementById('next');
     const openJsonBtn = document.getElementById('open-json');
+    const openEditorBtn = document.getElementById('btnOpenEditor');
+    const openEditorLink = document.getElementById('open-editor-link');
 
     let currentBook = null;   // { id, title, pages:[{chapter_index,text,image_urls:[]}, ...] }
     let pageIndex = 0;
@@ -354,13 +425,19 @@
       const page = currentBook.pages[pageIndex];
       const mainImg = (page.image_urls && page.image_urls[0]) ? page.image_urls[0] : '';
       leftBg.style.backgroundImage = mainImg ? `url(${mainImg})` : 'none';
-      leftText.innerHTML = `<h3>Chapter ${page.chapter_index + 1}</h3><p>${page.text.replace(/\n/g,'<br/>')}</p>`;
+      leftText.innerHTML = `<h3>Chapter ${page.chapter_index + 1}</h3><p>${(page.text || '').replace(/\n/g,'<br/>')}</p>`;
       rightImg.src = mainImg || '';
       pageIndicator.textContent = `Page ${pageIndex + 1} / ${currentBook.pages.length}`;
       bookTitleEl.textContent = `• ${currentBook.title}`;
       prevBtn.disabled = pageIndex === 0;
       nextBtn.disabled = pageIndex === currentBook.pages.length - 1;
       viewerEl.style.display = 'block';
+      // update editor deep-link
+      if (currentBook?.id) {
+        const target = `${location.origin}/editor?book=${encodeURIComponent(currentBook.id)}`;
+        openEditorLink.href = target;
+        openEditorBtn.onclick = () => window.open(target, '_blank', 'noopener');
+      }
     }
 
     prevBtn.addEventListener('click', () => { if (pageIndex > 0) { pageIndex--; renderPage(); } });
@@ -540,10 +617,7 @@
         });
         const ok = res.ok;
         document.getElementById('saveTextStatus').textContent = ok ? 'Saved ✓' : 'Failed';
-        if (ok) {
-          // keep local copy in sync so view shows immediately
-          data.pages[idx].text = markdown;
-        }
+        if (ok) { data.pages[idx].text = markdown; }
         setTimeout(() => (document.getElementById('saveTextStatus').textContent = ''), 1500);
       };
 
@@ -582,6 +656,47 @@
       if (!window.currentBookId) return;
       location.hash = '#edit:' + window.currentBookId;
     };
+
+    // ===== Format for KDP =====
+    const formatModal = document.getElementById('formatModal');
+    const btnFormat = document.getElementById('btnFormatKDP');
+    const btnFormatCancel = document.getElementById('btnFormatCancel');
+    const btnDoFormat = document.getElementById('btnDoFormat');
+    const formatStatus = document.getElementById('formatStatus');
+
+    btnFormat.addEventListener('click', () => {
+      if (!window.currentBookId) { alert('Open a book first.'); return; }
+      formatModal.showModal();
+    });
+    btnFormatCancel.addEventListener('click', () => formatModal.close());
+
+    btnDoFormat.addEventListener('click', async () => {
+      if (!window.currentBookId) return;
+      const payload = {
+        trim: document.getElementById('optTrim').value,
+        bleed: document.getElementById('optBleed').value === 'yes',
+        font: document.getElementById('optFont').value,
+        line_height: parseFloat(document.getElementById('optLH').value),
+        bg_style: document.getElementById('optBG').value
+      };
+      try {
+        formatStatus.textContent = 'Formatting…';
+        const r = await fetch(`/books/${window.currentBookId}/format`, {
+          method: 'POST',
+          headers: {'content-type':'application/json'},
+          body: JSON.stringify(payload)
+        });
+        const j = await r.json();
+        if (!r.ok || !j.pdf_url) throw new Error(j.detail || 'Formatter failed');
+        formatModal.close();
+        formatStatus.textContent = 'Opening PDF…';
+        window.open(j.pdf_url, '_blank', 'noopener');
+        setTimeout(()=> formatStatus.textContent = '', 1500);
+      } catch (e) {
+        formatStatus.textContent = 'Failed to format.';
+        alert(e.message || 'Failed to format.');
+      }
+    });
 
     /* ================= Media Gallery (optional) ================= */
     async function loadMedia() {
