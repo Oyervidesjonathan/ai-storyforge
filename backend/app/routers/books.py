@@ -1,586 +1,362 @@
-import os, time, uuid, json, base64, re
-from typing import List, Optional, Dict, Tuple
-from pathlib import Path
-from io import BytesIO
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>StoryForge • Pro Editor</title>
+<style>
+  /* ================= THEME ================= */
+  :root{
+    --ink:#1c1a1a;
+    --muted:#6e6762;
+    --cream:#fbf6ef;
+    --card:rgba(255,255,255,0.82);
+    --glass:rgba(255,255,255,0.66);
+    --border:rgba(0,0,0,0.06);
+    --accent:#1e293b;
+    --accent-2:#0f172a;
+    --good:#17a34a;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; color:var(--ink); font-family: ui-sans-serif,-apple-system,Segoe UI,Roboto,Helvetica,Arial,Apple Color Emoji,Segoe UI Emoji;
+    background:
+      radial-gradient(1200px 600px at 10% -10%, #f59e0b33 0%, transparent 60%),
+      radial-gradient(1200px 700px at 110% -10%, #ef444433 0%, transparent 60%),
+      radial-gradient(1400px 700px at 50% 120%, #10b9812b 0%, transparent 65%),
+      linear-gradient(180deg,#2b1e1a,#1a1413 30%, #120f0e 100%);
+    overflow-y:auto;
+  }
+  .vignette::before{
+    content:""; position:fixed; inset:-10vmax; pointer-events:none;
+    background: radial-gradient(1200px 800px at 50% -10%, transparent, transparent 60%, rgba(0,0,0,.28) 100%);
+    z-index:0;
+  }
+  .shell{
+    position:relative; z-index:1; padding:18px 18px 32px;
+    max-width: 1400px; margin:0 auto;
+  }
 
-from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, Field, constr
-from openai import OpenAI
+  /* Header */
+  .bar{
+    display:flex; align-items:center; gap:12px; color:#fff; padding:6px 4px 18px 4px;
+  }
+  .brand{display:flex; align-items:center; gap:10px; font-weight:800; letter-spacing:.5px;}
+  .brand .logo{
+    width:22px; height:22px; display:grid; place-items:center;
+    background:linear-gradient(135deg,#f59e0b,#ef4444); border-radius:6px; box-shadow:0 6px 18px #ef444466;
+  }
+  .brand small{opacity:.85; font-weight:600}
+  .spacer{flex:1}
+  .btn{
+    appearance:none; border:1px solid rgba(255,255,255,.2); color:#fff;
+    background:linear-gradient(180deg,#334155,#0f172a); padding:8px 12px; border-radius:12px; cursor:pointer;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.12), 0 6px 16px rgba(0,0,0,.35);
+  }
+  .btn:hover{filter:brightness(1.05)}
+  .btn-alt{background:transparent; border-color:rgba(255,255,255,.3)}
 
-# ----- NEW: formatter deps -----
-from jinja2 import Template
-from weasyprint import HTML
-from PIL import Image  # for JPEG data-URI embedding
+  /* Layout cards */
+  .grid{
+    display:grid; gap:18px;
+    grid-template-columns: 280px minmax(440px, 1fr) 420px;
+  }
+  .card{
+    background:var(--card); backdrop-filter: blur(12px);
+    border:1px solid var(--border); border-radius:18px; box-shadow: 0 14px 40px rgba(0,0,0,.18);
+  }
+  .panel{ padding:16px 16px 18px; }
+  .panel h3{ margin:2px 0 10px; font-size:14px; letter-spacing:.4px; color:#111; }
+  label{ display:block; font-size:12px; color:var(--muted); margin:6px 0 4px; }
+  input[type="text"], select, textarea{
+    width:100%; border:1px solid var(--border); background:var(--glass);
+    padding:10px 12px; border-radius:12px; outline:none;
+  }
+  textarea{min-height:340px; resize:vertical; background:rgba(255,255,255,.74)}
+  .row{display:flex; align-items:center; gap:10px}
+  .mt8{margin-top:8px}
+  .mt12{margin-top:12px}
+  .muted{color:var(--muted); font-size:12px}
 
-# -------- OpenAI config --------
-OPENAI_API_KEY     = os.getenv("OPENAI_API_KEY", "")
-OPENAI_ORG_ID      = os.getenv("OPENAI_ORG_ID", "")
-OPENAI_TEXT_MODEL  = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-OPENAI_IMAGE_MODEL = os.getenv("IMAGE_MODEL", "gpt-image-1")
+  /* Right images pane */
+  .thumbs{
+    display:grid; grid-template-columns: repeat(auto-fill, minmax(84px,1fr)); gap:8px;
+    max-height: 168px; overflow:auto; padding-bottom:4px;
+  }
+  .thumb{
+    border:1px solid var(--border); border-radius:12px; overflow:hidden; cursor:pointer; background:#fff;
+    box-shadow:0 6px 12px rgba(0,0,0,.06);
+  }
+  .thumb img{ width:100%; height:84px; object-fit:cover; display:block; }
+  .thumb.active{ outline:3px solid #f59e0b; }
 
-client: Optional[OpenAI]
-if not OPENAI_API_KEY:
-    client = None
-else:
-    client = OpenAI(api_key=OPENAI_API_KEY, organization=(OPENAI_ORG_ID or None))
+  .preview{
+    margin-top:10px; background:#fff; border:1px solid var(--border); border-radius:16px; overflow:hidden;
+    height: 340px; display:grid; place-items:center;
+  }
+  .preview img{ max-width:100%; max-height:100%; display:block; object-fit:contain }
+  .preview-empty{color:#bbb; font-size:14px}
 
-# -------- Storage / media root --------
-DEFAULT_MEDIA = Path(__file__).resolve().parents[1] / "data"
-DATA_ROOT = Path(os.getenv("MEDIA_ROOT", "/data"))
-if not DATA_ROOT.exists():
-    DATA_ROOT = DEFAULT_MEDIA
-DATA_ROOT.mkdir(parents=True, exist_ok=True)
+  .pill{
+    display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border-radius:100px; font-size:12px;
+    background:rgba(255,255,255,.6); border:1px solid var(--border);
+  }
 
-BOOKS_DIR = DATA_ROOT / "books"
-BOOKS_DIR.mkdir(parents=True, exist_ok=True)
+  /* ============== Modal (Format) ============== */
+  .modal-back{
+    position:fixed; inset:0; background:rgba(0,0,0,.45); display:none; align-items:center; justify-content:center; z-index:30;
+  }
+  .modal{ width: 560px; max-width:calc(100% - 32px) }
+  .modal .panel{ padding:18px }
+  .modal .row{ justify-content:space-between }
+  .modal .grid2{ display:grid; grid-template-columns: 1fr 1fr; gap:10px }
+  .badge{display:inline-block; padding:2px 8px; border-radius:999px; background:#0ea5e9; color:#fff; font-size:12px}
 
-# ✅ persist stories in /data
-STORIES_FILE = DATA_ROOT / "stories.json"
-STORIES: Dict[str, Dict] = {}
+  /* Tiny top status */
+  .led{width:8px;height:8px;border-radius:999px;background:linear-gradient(#16a34a,#15803d); box-shadow:0 0 0 3px rgba(22,163,74,.25)}
+</style>
+</head>
+<body class="vignette">
+  <div class="shell">
+    <div class="bar">
+      <div class="brand">
+        <div class="logo">📖</div>
+        <div>StoryForge <small>Pro Editor</small></div>
+        <span class="pill"><span class="led"></span> live</span>
+      </div>
+      <div class="spacer"></div>
+      <button id="btnBack" class="btn btn-alt" onclick="history.back()">← Back</button>
+      <button id="btnFormat" class="btn">✳️ Format</button>
+    </div>
 
-def _load_stories():
-    global STORIES
-    try:
-        if STORIES_FILE.exists():
-            STORIES = json.loads(STORIES_FILE.read_text(encoding="utf-8"))
-            print(f"✅ Loaded {len(STORIES)} stories from {STORIES_FILE}")
-        else:
-            STORIES = {}
-            print("🆕 No stories.json found. Starting fresh.")
-    except Exception as e:
-        STORIES = {}
-        print(f"⚠️ Failed to load stories: {e}")
+    <div class="grid">
+      <!-- Sidebar -->
+      <div class="card panel">
+        <h3>Book & Chapter</h3>
+        <label>Book ID</label>
+        <input id="bookId" type="text" placeholder="paste or use ?book=" />
+        <label class="mt8">Chapter</label>
+        <select id="chapterSel"></select>
+        <div class="mt12 muted" id="sideMeta"></div>
+      </div>
 
-def _save_stories():
-    try:
-        STORIES_FILE.write_text(json.dumps(STORIES, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"💾 Saved {len(STORIES)} stories -> {STORIES_FILE}")
-    except Exception as e:
-        print(f"⚠️ Failed to save stories: {e}")
+      <!-- Text editor -->
+      <div class="card panel">
+        <h3>Chapter Text</h3>
+        <label>Text (Markdown)</label>
+        <textarea id="chapterText" placeholder="Write or edit the story for this chapter..."></textarea>
+        <div class="row mt8">
+          <button id="btnSave" class="btn">💾 Save Text</button>
+          <span id="saveStatus" class="muted"></span>
+        </div>
+      </div>
 
-_load_stories()
+      <!-- Images panel -->
+      <div class="card panel">
+        <h3>Images</h3>
+        <div id="thumbs" class="thumbs"></div>
+        <div id="preview" class="preview"><div class="preview-empty">Select a thumbnail to preview</div></div>
 
-# --------- models ---------
-class StoryRequest(BaseModel):
-    prompt: constr(strip_whitespace=True, min_length=3)
-    age_range: constr(strip_whitespace=True) = Field("4-7")
-    style: constr(strip_whitespace=True) = Field("bedtime, friendly")
-    chapters: int = Field(1, ge=1, le=10)
+        <label class="mt12">Image edit prompt</label>
+        <textarea id="imgPrompt" rows="4" placeholder="e.g., make the dragon a bit smaller, add moonlight"></textarea>
+        <div class="row mt8">
+          <button id="btnApply" class="btn">Apply to selected</button>
+          <span id="imgStatus" class="muted"></span>
+        </div>
+      </div>
+    </div>
+  </div>
 
-class StoryResponse(BaseModel):
-    title: str
-    chapters: List[str]
+  <!-- =================== FORMAT MODAL =================== -->
+  <div id="modalBack" class="modal-back">
+    <div class="modal card">
+      <div class="panel">
+        <div class="row" style="margin-bottom:8px;">
+          <h3 style="margin:0">Format for KDP <span class="badge">PDF</span></h3>
+          <button class="btn btn-alt" onclick="closeModal()">✖</button>
+        </div>
+        <div class="grid2">
+          <div>
+            <label>Trim</label>
+            <select id="optTrim">
+              <option>8.5x8.5</option>
+              <option>8x10</option>
+              <option>7x10</option>
+            </select>
+          </div>
+          <div>
+            <label>Bleed (adds 0.125")</label>
+            <select id="optBleed">
+              <option value="no">no</option>
+              <option value="yes">yes</option>
+            </select>
+          </div>
+          <div>
+            <label>Font</label>
+            <select id="optFont">
+              <option>Literata</option>
+              <option>Georgia</option>
+              <option>Times New Roman</option>
+              <option>Palatino</option>
+            </select>
+          </div>
+          <div>
+            <label>Line height</label>
+            <input id="optLH" type="text" value="1.6"/>
+          </div>
+          <div>
+            <label>Background style</label>
+            <select id="optBG">
+              <option value="tint">warm tint</option>
+              <option value="blur">soft blur</option>
+            </select>
+          </div>
+        </div>
+        <div class="row mt12">
+          <button class="btn" id="btnDoFormat">Generate PDF</button>
+          <span id="fmtStatus" class="muted"></span>
+        </div>
+      </div>
+    </div>
+  </div>
 
-class StoryItem(BaseModel):
-    id: str
-    title: str
-    chapters_count: int
-    created_at: int
+<script>
+const API = location.origin;
 
-class ImageRequest(BaseModel):
-    prompt: constr(strip_whitespace=True, min_length=3)
-    aspect: constr(strip_whitespace=True) = Field("square", description="square|portrait|landscape")
+/* ============== helpers ============== */
+const qs = (s, p=document)=>p.querySelector(s);
+const qsa = (s,p=document)=>Array.from(p.querySelectorAll(s));
+function getParam(name){
+  const u = new URL(location.href);
+  return u.searchParams.get(name) || "";
+}
+function toast(target, msg){ target.textContent = msg; setTimeout(()=>target.textContent="", 1600); }
 
-class ImageResponse(BaseModel):
-    image_url: str
+/* ============== state ============== */
+let BOOK_ID = getParam('book') || "";
+let CHAPTER_COUNT = 0;
+let CUR_CHAPTER = 1;
+let chapterImages = []; // current chapter images
+let selectedImageIdx = -1;
 
-class Page(BaseModel):
-    chapter_index: int
-    text: str
-    image_urls: List[str]
+/* ============== wiring ============== */
+qs('#bookId').value = BOOK_ID;
+qs('#bookId').addEventListener('change', () => {
+  BOOK_ID = qs('#bookId').value.trim();
+  if (BOOK_ID) loadMetaAndChapters(BOOK_ID);
+});
 
-class BookComposeRequest(BaseModel):
-    story: StoryRequest
-    images_per_chapter: int = Field(2, ge=1, le=3)
+qs('#chapterSel').addEventListener('change', (e)=>{
+  CUR_CHAPTER = parseInt(e.target.value,10) || 1;
+  loadChapter(CUR_CHAPTER);
+});
 
-class BookComposeResponse(BaseModel):
-    id: str
-    title: str
-    pages: List[Page]
-    cover_url: Optional[str] = None
+qs('#btnSave').addEventListener('click', async ()=>{
+  if (!BOOK_ID) return;
+  const markdown = qs('#chapterText').value;
+  const r = await fetch(`${API}/books/${BOOK_ID}/chapter/${CUR_CHAPTER}`,{
+    method:'PUT', headers:{'content-type':'application/json'},
+    body: JSON.stringify({ chapter_index: CUR_CHAPTER-1, markdown })
+  });
+  toast(qs('#saveStatus'), r.ok ? 'Saved ✓' : 'Failed');
+});
 
-class BookListItem(BaseModel):
-    id: str
-    title: str
-    cover_url: Optional[str] = None
-    created_at: Optional[int] = None
-    pages: int
+qs('#btnApply').addEventListener('click', async ()=>{
+  if (!BOOK_ID || selectedImageIdx < 0) return;
+  const prompt = qs('#imgPrompt').value.trim();
+  if (!prompt) { alert('Enter an edit prompt first.'); return; }
+  qs('#imgStatus').textContent = 'Updating…';
+  const r = await fetch(`${API}/books/${BOOK_ID}/edit-image`,{
+    method:'POST', headers:{'content-type':'application/json'},
+    body: JSON.stringify({ chapter_index: CUR_CHAPTER-1, image_index: selectedImageIdx, prompt })
+  });
+  qs('#imgStatus').textContent = r.ok ? 'Updated ✓ (may take a moment)' : 'Failed';
+  if (r.ok) loadChapter(CUR_CHAPTER);
+  setTimeout(()=>qs('#imgStatus').textContent='',1500);
+});
 
-# ----- NEW: formatter options -----
-class FormatOpts(BaseModel):
-    trim: str = "8.5x8.5"      # "8x10", "7x10" also supported
-    bleed: bool = False        # adds 0.125" each side
-    font: str = "Literata"
-    line_height: float = 1.6
-    bg_style: str = "tint"     # "blur" or "tint" (blur often ignored by PDF engines)
+/* ============== format modal ============== */
+qs('#btnFormat').addEventListener('click', ()=>{
+  if (!BOOK_ID) { alert('Enter a Book ID first.'); return; }
+  openModal();
+});
+qs('#btnDoFormat').addEventListener('click', doFormat);
 
-TRIMS: Dict[str, Tuple[float, float]] = {
-    "8.5x8.5": (8.5, 8.5),
-    "8x10":    (8.0, 10.0),
-    "7x10":    (7.0, 10.0),
+function openModal(){ qs('#modalBack').style.display='flex'; }
+function closeModal(){ qs('#modalBack').style.display='none'; }
+
+/* ============== data loaders ============== */
+async function loadMetaAndChapters(bookId){
+  // read the book JSON from media to count pages + title
+  const meta = await fetch(`${API}/media/books/${bookId}/book.json?ts=${Date.now()}`,{cache:'no-store'}).then(r=>r.json());
+  CHAPTER_COUNT = (meta.pages || []).length;
+  qs('#sideMeta').textContent = meta.title || '';
+  const sel = qs('#chapterSel');
+  sel.innerHTML = "";
+  for (let i=1;i<=CHAPTER_COUNT;i++){
+    const o = document.createElement('option'); o.value=i; o.textContent = `Chapter ${i}`; sel.appendChild(o);
+  }
+  CUR_CHAPTER = 1;
+  sel.value = "1";
+  await loadChapter(1);
 }
 
-# ====== NEW helpers for formatter ======
-def _media_url_to_abs(media_url: str) -> Path:
-    if not media_url or not media_url.startswith("/media/"):
-        raise HTTPException(status_code=400, detail="expected a /media/... url")
-    rel = media_url[len("/media/"):]  # e.g. 'books/<id>/ch01_img1.png'
-    p = DATA_ROOT / rel
-    if not p.exists():
-        raise HTTPException(status_code=404, detail=f"asset not found: {media_url}")
-    return p
+async function loadChapter(n){
+  const r = await fetch(`${API}/books/${BOOK_ID}/chapter/${n}?t=${Date.now()}`, {cache:'no-store'});
+  const data = await r.json();
+  qs('#chapterText').value = data.text || '';
+  chapterImages = Array.isArray(data.images) ? data.images : [];
+  renderThumbs();
+  renderPreview(-1);
+}
 
-def _inline_img_as_jpeg_data_uri(path: Path, quality: int = 88) -> str:
-    """Open image, convert to RGB JPEG, return data: URI (reliable embedding for PDFs)."""
-    with Image.open(path) as im:
-        if im.mode not in ("RGB", "L"):
-            im = im.convert("RGB")
-        buf = BytesIO()
-        im.save(buf, format="JPEG", quality=quality, optimize=True)
-        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-    return f"data:image/jpeg;base64,{b64}"
+function renderThumbs(){
+  const g = qs('#thumbs'); g.innerHTML = '';
+  chapterImages.forEach((url, i)=>{
+    const b = document.createElement('button');
+    b.className = 'thumb';
+    b.innerHTML = `<img src="${url}" alt="thumb ${i+1}">`;
+    b.onclick = ()=>{ selectedImageIdx = i; qsa('.thumb',g).forEach(x=>x.classList.remove('active')); b.classList.add('active'); renderPreview(i); };
+    g.appendChild(b);
+  });
+}
 
-def _md_to_html_paragraphs(md: str) -> str:
-    """
-    Light markdown → HTML:
-    - removes **bold** markers
-    - splits on blank lines into <p>
-    - collapses single newlines so paragraphs aren't narrow columns
-    """
-    if not md:
-        return ""
-    t = md.replace("**", "")
-    t = t.replace("\r\n", "\n").replace("\r", "\n")
-    parts = re.split(r"\n\s*\n", t.strip())
-    html_parts = []
-    for p in parts:
-        p1 = re.sub(r"\n+", " ", p).strip()
-        if p1:
-            html_parts.append(f"<p>{p1}</p>")
-    return "".join(html_parts)
+function renderPreview(i){
+  const p = qs('#preview');
+  p.innerHTML = '';
+  if (i<0){ const d=document.createElement('div'); d.className='preview-empty'; d.textContent='Select a thumbnail to preview'; p.appendChild(d); return; }
+  const img = new Image(); img.src = chapterImages[i]; img.alt = 'preview';
+  p.appendChild(img);
+}
 
-TEMPLATE_HTML = Template(r"""
-<!doctype html>
-<html><head>
-  <meta charset="utf-8">
-  <style>
-    @page { size: {{ page_w_in }}in {{ page_h_in }}in; margin: 0; }
-    :root{
-      --safe: 0.375in;
-      --lh: {{ line_height }};
-      --font: '{{ font }}', Georgia, serif;
-    }
-    body{ margin:0; font-family: var(--font); color:#222; }
-    h2{ margin: 0 0 8pt 0; font-size: 16pt; }
-    .page{ position:relative; width:{{ page_w_in }}in; height:{{ page_h_in }}in; display:grid; grid-template-columns:1fr 1fr; }
-    .textbox{ position:relative; padding: var(--safe); }
-    .box{ background: {% if bg_style=='tint' %}#fbf6ef{% else %}#ffffff{% endif %}; padding:.5in; border-radius:.1in; line-height:var(--lh); font-size:12.5pt; }
-    .art{ display:flex; align-items:center; justify-content:center; padding: var(--safe); }
-    .art img{ max-width:100%; max-height:100%; border-radius: 6pt; }
-    .spacer{ page-break-after: always; }
-  </style>
-</head>
-<body>
-  {% for ch in chapters %}
-    <section class="page">
-      <div class="textbox"><div class="box"><h2>Chapter {{ ch.number }}</h2>{{ ch.text_html | safe }}</div></div>
-      <div class="art">
-        {% if ch.hero_data %}<img src="{{ ch.hero_data | e }}">{% endif %}
-      </div>
-    </section>
-    <div class="spacer"></div>
-  {% endfor %}
+/* ============== format action ============== */
+async function doFormat(){
+  const payload = {
+    trim: qs('#optTrim').value,
+    bleed: qs('#optBleed').value === 'yes',
+    font: qs('#optFont').value,
+    line_height: parseFloat(qs('#optLH').value) || 1.6,
+    bg_style: qs('#optBG').value
+  };
+  qs('#fmtStatus').textContent = 'Formatting…';
+  const r = await fetch(`${API}/books/${BOOK_ID}/format`,{
+    method:'POST', headers:{'content-type':'application/json'},
+    body: JSON.stringify(payload)
+  });
+  const j = await r.json().catch(()=>({}));
+  if (r.ok && j.pdf_url){
+    const a = document.createElement('a'); a.href = j.pdf_url; a.download = '';
+    document.body.appendChild(a); a.click(); a.remove();
+    qs('#fmtStatus').textContent = 'Done ✓';
+    setTimeout(closeModal, 400);
+  } else {
+    qs('#fmtStatus').textContent = 'Failed';
+  }
+}
+
+/* ============== boot ============== */
+if (BOOK_ID) loadMetaAndChapters(BOOK_ID);
+</script>
 </body>
 </html>
-""")
-
-# --------- helpers ---------
-def _title_from_prompt(prompt: str, age: str) -> str:
-    return f"{prompt.strip().capitalize()} (A {age} Story)"
-
-def _chapter_prompts(base_prompt: str, style: str, chapters: int) -> List[str]:
-    return [
-        f"Write Chapter {i+1} of a children's story.\n"
-        f"Premise: {base_prompt}\n"
-        f"Style: {style}. Tone: gentle, cozy, simple words.\n"
-        f"Length: 120-200 words. Avoid brand names and scary stuff."
-        for i in range(chapters)
-    ]
-
-def _image_prompt(title: str, chapter_text: str, style: str, note: str = "") -> str:
-    base = (
-        f"Children's picture book illustration for '{title}'. "
-        f"Scene: {chapter_text[:240]}. "
-        f"Style: {style}. Ultra kid-friendly, warm, watercolor, no text overlay."
-    )
-    if note:
-        base += f" {note}"
-    return base
-
-def _img_size(aspect: str) -> str:
-    a = (aspect or "square").lower()
-    if a.startswith("port"): return "1024x1536"
-    if a.startswith("land"): return "1536x1024"
-    return "1024x1024"
-
-def _img_size_px(aspect: str) -> Tuple[int, int]:
-    a = (aspect or "square").lower()
-    if a.startswith("port"): return (1024, 1536)
-    if a.startswith("land"): return (1536, 1024)
-    return (1024, 1024)
-
-def _placeholder_svg(title: str, w: int, h: int) -> str:
-    t = (title or "StoryForge").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
-    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}">
-  <defs><linearGradient id="g" x1="0" x2="1" y1="0" y2="1">
-    <stop offset="0%" stop-color="#fde68a"/><stop offset="100%" stop-color="#fca5a5"/></linearGradient></defs>
-  <rect width="100%" height="100%" fill="url(#g)" rx="24" ry="24"/>
-  <text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle"
-        font-family="Arial" font-size="{int(min(w,h)*0.08)}" fill="#1f2937">{t[:50]}</text>
-  <text x="50%" y="62%" dominant-baseline="middle" text-anchor="middle"
-        font-family="Arial" font-size="{int(min(w,h)*0.04)}" fill="#374151">(placeholder illustration)</text>
-</svg>"""
-
-def _gen_image_to_file(prompt: str, aspect: str, dest_stem: Path) -> Path:
-    w, h = _img_size_px(aspect)
-    dest_stem.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        if client is None or not OPENAI_IMAGE_MODEL:
-            raise RuntimeError("Images API not configured")
-        resp = client.images.generate(
-            model=OPENAI_IMAGE_MODEL, prompt=prompt, size=_img_size(aspect), quality="high"
-        )
-        b64 = getattr(resp.data[0], "b64_json", None)
-        if not isinstance(b64, str) or not b64.strip():
-            raise ValueError("No b64_json in image response")
-        out = dest_stem.with_suffix(".png")
-        out.write_bytes(base64.b64decode(b64))
-        return out
-    except Exception as e:
-        print(f"⚠️ Image generation failed -> placeholder: {e}")
-        out = dest_stem.with_suffix(".svg")
-        out.write_text(_placeholder_svg(prompt, w, h), encoding="utf-8")
-        return out
-
-def _require_client():
-    if client is None:
-        raise HTTPException(status_code=500, detail="OPENAI_API_KEY is not set in Railway Variables.")
-
-# -------- Router --------
-router = APIRouter()
-
-# ===== Stories =====
-@router.get("/stories", response_model=List[StoryItem], tags=["Stories"])
-def list_stories():
-    items: List[StoryItem] = [
-        StoryItem(id=i, title=d["title"], chapters_count=len(d["chapters"]), created_at=d["created_at"])
-        for i, d in STORIES.items()
-    ]
-    items.sort(key=lambda x: x.created_at, reverse=True)
-    return items
-
-@router.get("/stories/{story_id}", response_model=StoryResponse, tags=["Stories"])
-def get_story(story_id: str):
-    data = STORIES.get(story_id)
-    if not data:
-        raise HTTPException(status_code=404, detail="Not found")
-    return StoryResponse(title=data["title"], chapters=data["chapters"])
-
-@router.post("/stories", response_model=StoryResponse, tags=["Stories"])
-def generate_story(req: StoryRequest):
-    _require_client()
-    title = _title_from_prompt(req.prompt, req.age_range)
-    prompts = _chapter_prompts(req.prompt, req.style, req.chapters)
-    chapters: List[str] = []
-    try:
-        for cp in prompts:
-            resp = client.chat.completions.create(
-                model=OPENAI_TEXT_MODEL, temperature=0.9,
-                messages=[
-                    {"role": "system", "content":
-                        "You are a children’s author. Warm, age-appropriate prose. "
-                        "Avoid brand names and anything scary."
-                    },
-                    {"role": "user", "content": cp},
-                ],
-            )
-            chapters.append((resp.choices[0].message.content or "").strip() or "…")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"LLM error: {e}")
-
-    story_id = str(uuid.uuid4())
-    STORIES[story_id] = {"title": title, "chapters": chapters, "created_at": int(time.time())}
-    _save_stories()
-    print(f"📝 Story created id={story_id} title={title!r} chapters={len(chapters)}")
-    return StoryResponse(title=title, chapters=chapters)
-
-@router.delete("/stories/{story_id}", tags=["Stories"])
-def delete_story(story_id: str):
-    if story_id not in STORIES:
-        raise HTTPException(status_code=404, detail="Story not found")
-    del STORIES[story_id]
-    _save_stories()
-    print(f"🗑️ Story deleted id={story_id}")
-    return {"ok": True, "deleted_id": story_id}
-
-# ===== Images (utility) =====
-@router.post("/images", response_model=ImageResponse, tags=["Images"])
-def generate_image(req: ImageRequest):
-    dest = DATA_ROOT / "tmp" / str(uuid.uuid4())
-    out = _gen_image_to_file(req.prompt.strip(), req.aspect, dest)
-    rel = out.relative_to(DATA_ROOT).as_posix()
-    return ImageResponse(image_url=f"/media/{rel}")
-
-# ===== Books: compose -> persist book.json =====
-@router.post("/books/compose", response_model=BookComposeResponse, tags=["Books"])
-def compose_book(req: BookComposeRequest):
-    s = generate_story(req.story)  # create story + persist
-
-    book_id = str(uuid.uuid4())
-    book_dir = BOOKS_DIR / book_id
-    book_dir.mkdir(parents=True, exist_ok=True)
-
-    pages: List[Page] = []
-    cover_url: Optional[str] = None
-
-    for idx, ch_text in enumerate(s.chapters, start=1):
-        urls: List[str] = []
-        for j in range(1, req.images_per_chapter + 1):
-            pmt = _image_prompt(s.title, ch_text, req.story.style, f"Panel {j} of {req.images_per_chapter}.")
-            out = _gen_image_to_file(pmt, "square", book_dir / f"ch{idx:02d}_img{j}")
-            rel = out.relative_to(DATA_ROOT).as_posix()
-            url = f"/media/{rel}"
-            urls.append(url)
-            if cover_url is None:
-                cover_url = url
-        pages.append(Page(chapter_index=idx-1, text=ch_text, image_urls=urls))
-
-    meta = {
-        "id": book_id,
-        "title": s.title,
-        "pages": [p.dict() for p in pages],
-        "cover_url": cover_url,
-        "created_at": int(time.time()),
-    }
-    (book_dir / "book.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    print(f"📘 Composed book id={book_id} title={s.title!r} pages={len(pages)} dir={book_dir}")
-    return BookComposeResponse(id=book_id, title=s.title, pages=pages, cover_url=cover_url)
-
-@router.get("/books/{book_id}", response_model=BookComposeResponse, tags=["Books"])
-def read_book(book_id: str):
-    jf = BOOKS_DIR / book_id / "book.json"
-    if not jf.exists():
-        raise HTTPException(status_code=404, detail="Book not found")
-    meta = json.loads(jf.read_text(encoding="utf-8"))
-    return BookComposeResponse(
-        id=meta["id"], title=meta["title"],
-        pages=[Page(**p) for p in meta.get("pages", [])],
-        cover_url=meta.get("cover_url")
-    )
-
-# ===== Books: tolerant listing endpoints =====
-def _scan_books() -> List[BookListItem]:
-    items: List[BookListItem] = []
-    if not BOOKS_DIR.exists():
-        return items
-    for sub in BOOKS_DIR.iterdir():
-        if not sub.is_dir():
-            continue
-        jf = sub / "book.json"
-        if not jf.exists():
-            continue
-        try:
-            meta = json.loads(jf.read_text(encoding="utf-8"))
-            items.append(BookListItem(
-                id=meta.get("id", sub.name),
-                title=meta.get("title", "Untitled"),
-                cover_url=meta.get("cover_url"),
-                created_at=meta.get("created_at"),
-                pages=len(meta.get("pages", [])),
-            ))
-        except Exception:
-            continue
-    items.sort(key=lambda x: x.created_at or 0, reverse=True)
-    return items
-
-@router.get("/books", tags=["Books"])
-def list_books_alias():
-    return _scan_books()
-
-@router.get("/bookshelf", tags=["Books"])
-def list_bookshelf():
-    return _scan_books()
-
-@router.get("/books/list", tags=["Books"])
-@router.get("/books/list/", tags=["Books"])
-def list_books_tolerant():
-    return _scan_books()
-
-# ---- Debug helpers ----
-@router.get("/debug/media")
-def debug_media():
-    items = []
-    for p in DATA_ROOT.rglob("*"):
-        if p.is_file():
-            rel = p.relative_to(DATA_ROOT).as_posix()
-            items.append({"url": f"/media/{rel}", "bytes": p.stat().st_size})
-    def mtime(item):
-        try:
-            return (DATA_ROOT / item["url"].replace("/media/", "")).stat().st_mtime
-        except Exception:
-            return 0
-    items.sort(key=mtime, reverse=True)
-    return {"root": str(DATA_ROOT), "count": len(items), "items": items[:200]}
-
-@router.get("/debug/read")
-def debug_read_media(path: str = Query(..., description="Path relative to /media, e.g. books/<id>/ch01_img1.png")):
-    p = Path(path)
-    if p.is_absolute() or ".." in p.parts:
-        raise HTTPException(status_code=400, detail="bad path")
-    target = DATA_ROOT / p
-    if not target.exists():
-        raise HTTPException(status_code=404, detail="not found")
-    return {"root": str(DATA_ROOT), "path": path, "exists": True, "bytes": target.stat().st_size}
-
-# ========= INLINE EDIT + CHAPTER APIS =========
-
-def _book_dir(book_id: str) -> Path:
-    return BOOKS_DIR / book_id
-
-def _book_json_path(book_id: str) -> Path:
-    return _book_dir(book_id) / "book.json"
-
-def _load_book_json(book_id: str) -> dict:
-    jf = _book_json_path(book_id)
-    if not jf.exists():
-        raise HTTPException(status_code=404, detail="book.json not found")
-    try:
-        return json.loads(jf.read_text(encoding="utf-8"))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"failed to read book.json: {e}")
-
-def _save_book_json(book_id: str, data: dict) -> None:
-    jf = _book_json_path(book_id)
-    jf.parent.mkdir(parents=True, exist_ok=True)
-    jf.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-class ChapterTextPatch(BaseModel):
-    chapter_index: int
-    markdown: str
-
-class ImageEditReq(BaseModel):
-    chapter_index: int
-    image_index: int
-    prompt: str
-
-# ---- inline text edit ----
-@router.put("/books/{book_id}/edit-text", tags=["Books"])
-def edit_book_text(book_id: str, patch: ChapterTextPatch):
-    meta = _load_book_json(book_id)
-    pages = meta.get("pages", [])
-    if patch.chapter_index < 0 or patch.chapter_index >= len(pages):
-        raise HTTPException(status_code=400, detail="invalid chapter index")
-    pages[patch.chapter_index]["text"] = patch.markdown
-    meta["last_modified"] = int(time.time())
-    _save_book_json(book_id, meta)
-    return {"ok": True, "book_id": book_id, "chapter_index": patch.chapter_index}
-
-# ---- inline image edit ----
-@router.post("/books/{book_id}/edit-image", tags=["Books"])
-def edit_book_image(book_id: str, req: ImageEditReq):
-    meta = _load_book_json(book_id)
-    pages = meta.get("pages", [])
-    if req.chapter_index < 0 or req.chapter_index >= len(pages):
-        raise HTTPException(status_code=400, detail="invalid chapter index")
-    page = pages[req.chapter_index]
-    img_urls = page.get("image_urls", [])
-    if req.image_index < 0 or req.image_index >= len(img_urls):
-        raise HTTPException(status_code=400, detail="invalid image index")
-
-    current_url = img_urls[req.image_index]
-    abs_path = _media_url_to_abs(current_url)
-    abs_path.parent.mkdir(parents=True, exist_ok=True)
-
-    tmp_stem = abs_path.parent / f"_tmp_{uuid.uuid4().hex}"
-    out_tmp = _gen_image_to_file(req.prompt.strip(), "square", tmp_stem)
-    os.replace(out_tmp, abs_path)
-
-    meta["last_modified"] = int(time.time())
-    page.setdefault("image_edits", {})
-    page["image_edits"][str(req.image_index)] = {"last_prompt": req.prompt, "ts": meta["last_modified"]}
-    _save_book_json(book_id, meta)
-
-    return {"ok": True, "book_id": book_id, "chapter_index": req.chapter_index,
-            "image_index": req.image_index, "url": current_url}
-
-# ---- NEW: chapter read/update (for the Pro Editor UI) ----
-@router.get("/books/{book_id}/chapter/{n}", tags=["Books"])
-def get_chapter(book_id: str, n: int):
-    meta = _load_book_json(book_id)
-    pages = meta.get("pages", [])
-    idx = n - 1
-    if idx < 0 or idx >= len(pages):
-        raise HTTPException(status_code=404, detail="chapter not found")
-    page = pages[idx]
-    return {"text": page.get("text", ""), "images": page.get("image_urls", [])}
-
-@router.put("/books/{book_id}/chapter/{n}", tags=["Books"])
-def put_chapter(book_id: str, n: int, patch: ChapterTextPatch):
-    meta = _load_book_json(book_id)
-    pages = meta.get("pages", [])
-    idx = n - 1
-    if idx < 0 or idx >= len(pages):
-        raise HTTPException(status_code=404, detail="chapter not found")
-    pages[idx]["text"] = patch.markdown
-    meta["last_modified"] = int(time.time())
-    _save_book_json(book_id, meta)
-    return {"ok": True, "book_id": book_id, "chapter_index": idx}
-
-# ---- NEW: KDP PDF formatter (embeds images as data URIs) ----
-@router.post("/books/{book_id}/format", tags=["Books"])
-def format_book(book_id: str, opts: FormatOpts):
-    jf = _book_json_path(book_id)
-    if not jf.exists():
-        raise HTTPException(status_code=404, detail="Book not found")
-    book = json.loads(jf.read_text(encoding="utf-8"))
-
-    trim_w_in, trim_h_in = TRIMS.get(opts.trim, TRIMS["8.5x8.5"])
-    bleed_in  = 0.125 if opts.bleed else 0.0
-    page_w_in = trim_w_in + (bleed_in * 2)
-    page_h_in = trim_h_in + (bleed_in * 2)
-
-    chapters = []
-    for p in book.get("pages", []):
-        hero_url = (p.get("image_urls") or [None])[0]
-        hero_data = ""
-        if hero_url:
-            try:
-                hero_data = _inline_img_as_jpeg_data_uri(_media_url_to_abs(hero_url))
-            except Exception as e:
-                print(f"⚠️ image embed failed: {e}")
-        chapters.append({
-            "number": int(p.get("chapter_index", 0)) + 1,
-            "text_html": _md_to_html_paragraphs(p.get("text", "")),
-            "hero_data": hero_data,
-        })
-
-    html = TEMPLATE_HTML.render(
-        chapters=chapters,
-        page_w_in=page_w_in,
-        page_h_in=page_h_in,
-        line_height=opts.line_height,
-        font=opts.font,
-        bg_style=opts.bg_style,
-    )
-
-    out_dir = BOOKS_DIR / book_id / "exports"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    safe_title = (book.get("title") or "book").replace("/", "_").replace("\\", "_")
-    out_pdf = out_dir / f"{safe_title.replace(' ', '_')}_kdp.pdf"
-
-    # Images are inlined; base_url is just for any potential relative assets.
-    HTML(string=html, base_url=str(DATA_ROOT.resolve())).write_pdf(str(out_pdf))
-
-    rel = out_pdf.relative_to(DATA_ROOT).as_posix()
-    return {"pdf_url": f"/media/{rel}"}
