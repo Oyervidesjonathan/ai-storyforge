@@ -1,5 +1,23 @@
-fastapi==0.115.0
-uvicorn[standard]==0.30.6
+# --- Core backend ---
+fastapi==0.115.2
+uvicorn[standard]==0.31.1
 pydantic==2.9.2
-openai>=1.40.0
-httpx>=0.27.2
+python-multipart==0.0.12
+
+# --- OpenAI API ---
+openai==1.52.2
+httpx==0.27.2
+
+# --- PDF Formatter / HTML Rendering ---
+weasyprint==62.3
+jinja2==3.1.4
+
+# --- Frontend serving / Static files ---
+aiofiles==24.1.0
+starlette==0.40.0
+
+# --- CORS middleware ---
+itsdangerous==2.2.0
+
+# --- Optional / Utility ---
+requests==2.32.3
