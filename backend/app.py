@@ -392,6 +392,13 @@ def generate_book(req: BookRequest):
         final_id = str(uuid.uuid4())
     return BookResponse(id=final_id, title=story.title, chapters=story.chapters, image_urls=urls)
 
+# models: add image_prompts
+class Page(BaseModel):
+    chapter_index: int
+    text: str
+    image_urls: List[str]
+    image_prompts: Optional[List[str]] = None  # NEW
+
 # Compose: multi images per chapter, and persist book.json
 @app.post("/books/compose", response_model=BookComposeResponse, tags=["Books"])
 def compose_book(req: BookComposeRequest):
@@ -402,6 +409,12 @@ def compose_book(req: BookComposeRequest):
 
     pages: List[Page] = []
     cover_url: Optional[str] = None
+
+    style_seed = (
+        f"Picture-book, watercolor, soft edges, cozy lighting. "
+        f"Keep the SAME character design and medium across pages. "
+        f"Style keywords: {req.story.style}."
+    )
 
     for idx, ch_text in enumerate(s.chapters, start=1):
         prompts = _image_prompts_for_chapter(s.title, ch_text, req.story.style, req.images_per_chapter)
@@ -414,18 +427,32 @@ def compose_book(req: BookComposeRequest):
             urls.append(url)
             if cover_url is None:
                 cover_url = url
-        pages.append(Page(chapter_index=idx-1, text=ch_text, image_urls=urls))
+
+        # build a Page object (not a dict)
+        pages.append(Page(
+            chapter_index=idx - 1,
+            text=ch_text,
+            image_urls=urls,
+            image_prompts=prompts,   # keep prompts for future style-locked edits
+        ))
 
     meta = {
         "id": book_id,
         "title": s.title,
-        "pages": [page.dict() for page in pages],
+        "pages": [p.dict() for p in pages],  # safe: pages are Page objects
         "cover_url": cover_url,
         "created_at": int(time.time()),
+        "style_seed": style_seed,
     }
-    (book_dir / "book.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    (book_dir / "book.json").write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2),
+        encoding="utf-8"
+    )
     print(f"📖 Composed book {book_id} • pages={len(pages)} • dir={book_dir}")
+
     return BookComposeResponse(id=book_id, title=s.title, pages=pages, cover_url=cover_url)
+
 
 #============ Books ID Get Function =========================
 
