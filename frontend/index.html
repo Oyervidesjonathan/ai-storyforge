@@ -367,7 +367,7 @@
     nextBtn.addEventListener('click', () => { if (currentBook && pageIndex < currentBook.pages.length - 1) { pageIndex++; renderPage(); } });
     openJsonBtn.addEventListener('click', () => {
       if (!currentBook) return;
-      window.open(`${API_BASE}/books/${currentBook.id}`, '_blank');
+      window.open(`${API_BASE}/books/${currentBook.id}?t=${Date.now()}`, '_blank');
     });
 
     // Compose book
@@ -452,13 +452,12 @@
 
     /* ================= Edit View ================= */
     async function fetchBook(id) {
-      const r = await fetch(`/books/${id}`);
+      const r = await fetch(`${API_BASE}/books/${id}?t=${Date.now()}`, { cache: 'no-store' });
       if (!r.ok) throw new Error('Could not open book');
       return await r.json();
     }
 
     function showOnly(idsToShow) {
-      // Toggle viewer, toolbar, and edit view. Shelf always stays visible unless we explicitly hide.
       const ids = ['book-viewer', 'book-view-toolbar', 'edit-view'];
       ids.forEach(id => {
         const el = document.getElementById(id);
@@ -475,20 +474,21 @@
       renderPage();
       document.getElementById('book-view-toolbar').style.display = 'block';
       showOnly(['book-viewer', 'book-view-toolbar']);
-      // scroll to viewer
       window.scrollTo({ top: document.getElementById('book-card').offsetTop - 8, behavior: 'smooth' });
     }
 
     async function renderShelf() {
       await loadBooks();
-      showOnly([]); // hides viewer/edit, leaves shelf visible
-      // scroll to shelf
+      showOnly([]);
       window.scrollTo({ top: document.getElementById('shelf-card').offsetTop - 8, behavior: 'smooth' });
     }
 
     async function renderEditView(bookId) {
       window.currentBookId = bookId;
-      const data = await fetch(`/media/books/${bookId}/book.json`).then(r => r.json());
+      const data = await fetch(
+        `/media/books/${bookId}/book.json?t=${Date.now()}`,
+        { cache: 'no-store' }
+      ).then(r => r.json());
 
       showOnly(['edit-view']);
       document.getElementById('edit-title').textContent = data.title || 'Untitled';
@@ -540,6 +540,10 @@
         });
         const ok = res.ok;
         document.getElementById('saveTextStatus').textContent = ok ? 'Saved ✓' : 'Failed';
+        if (ok) {
+          // keep local copy in sync so view shows immediately
+          data.pages[idx].text = markdown;
+        }
         setTimeout(() => (document.getElementById('saveTextStatus').textContent = ''), 1500);
       };
 
