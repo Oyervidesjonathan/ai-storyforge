@@ -1,70 +1,187 @@
 <!DOCTYPE html>
-const data = await r.json();
-const g = el('gallery'); g.innerHTML = '';
-data.items.forEach(u => {
-const b = document.createElement('button');
-b.className = 'rounded-xl overflow-hidden border';
-b.innerHTML = `<img class="thumb w-[100px]" src="${u}">`;
-b.onclick = () => { setBg(u); };
-g.appendChild(b);
-});
-}
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>AI StoryForge — Pro Editor</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <style>
+    :root{ --bg:#faf6f2; --ink:#222; --muted:#666; --card:#fff; --border:#eee; }
+    body{ font-family:Arial, sans-serif; margin:0; background:var(--bg); color:var(--ink); }
+    header{ padding:14px 16px; background:#fff; border-bottom:1px solid var(--border); position:sticky; top:0; z-index:3; display:flex; gap:12px; align-items:center; }
+    h1{ font-size:18px; margin:0; }
+    main{ padding:16px; display:grid; grid-template-columns: 280px 1fr 360px; gap:16px; }
+    @media (max-width:1100px){ main{ grid-template-columns:1fr; } }
+    .card{ background:#fff; border:1px solid var(--border); border-radius:12px; }
+    .card h3{ margin:0; padding:12px 14px; border-bottom:1px solid var(--border); font-size:15px; }
+    .card .body{ padding:12px 14px; }
+    select, textarea, input{ width:100%; font-size:14px; padding:8px; border:1px solid #ddd; border-radius:8px; box-sizing:border-box; }
+    textarea{ min-height:220px; }
+    button{ background:#222; color:#fff; border:none; border-radius:8px; padding:8px 12px; cursor:pointer; }
+    button[disabled]{ opacity:.5; cursor:not-allowed; }
+    .muted{ color:var(--muted); }
+    .gallery{ display:grid; grid-template-columns:repeat(3, 1fr); gap:8px; }
+    .gallery button{ background:#fff; border:1px solid #ddd; border-radius:10px; padding:6px; }
+    .gallery img{ width:100%; height:110px; object-fit:cover; border-radius:8px; display:block; }
+    .row{ display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .toast{ position:fixed; right:14px; bottom:14px; background:#000; color:#fff; padding:8px 10px; border-radius:8px; opacity:.9; display:none; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>📘 Pro Editor</h1>
+    <span class="muted" id="hdrTitle"></span>
+    <span style="flex:1"></span>
+    <a href="/ui"><button style="background:#555">← Back</button></a>
+  </header>
 
+  <main>
+    <!-- Book / chapter -->
+    <section class="card">
+      <h3>Book & Chapter</h3>
+      <div class="body">
+        <div class="row">
+          <label class="muted">Book ID</label>
+          <input id="bookId" readonly />
+        </div>
+        <div style="height:8px"></div>
+        <label>Chapter</label>
+        <select id="chapSelect"></select>
+        <div style="height:8px"></div>
+        <button id="btnDoFormat">🧩 Format for KDP</button>
+      </div>
+    </section>
 
-// ====== EVENTS ======
-el('chapSelect').addEventListener('change', (e) => {
-currentChapter = parseInt(e.target.value, 10);
-loadChapter(currentChapter);
-});
+    <!-- Text -->
+    <section class="card">
+      <h3>Chapter Text</h3>
+      <div class="body">
+        <label class="muted">Text (Markdown)</label>
+        <textarea id="chapterText"></textarea>
+        <div style="height:8px"></div>
+        <button id="btnSaveText">💾 Save Text</button>
+        <span id="saveStatus" class="muted"></span>
+      </div>
+    </section>
 
+    <!-- Images -->
+    <section class="card">
+      <h3>Images</h3>
+      <div class="body">
+        <div id="gallery" class="gallery"></div>
+        <div style="height:10px"></div>
+        <label>Image edit prompt</label>
+        <textarea id="editPrompt" placeholder="e.g., make the dragon a bit smaller, add moonlight"></textarea>
+        <div style="height:8px"></div>
+        <button id="btnApplyEdit" disabled>Apply to selected</button>
+        <span id="imgStatus" class="muted"></span>
+      </div>
+    </section>
+  </main>
 
-el('btnSaveText').addEventListener('click', async () => {
-const payload = { text: el('chapterText').value };
-const r = await fetch(API(`/chapter/${currentChapter}`), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-toast(await r.text());
-});
+  <div id="toast" class="toast"></div>
 
+  <script>
+    const qs = new URLSearchParams(location.search);
+    const bookId = qs.get('book');
+    const API = location.origin;
 
-el('btnApplyEdit').addEventListener('click', async () => {
-const prompt = el('editPrompt').value.trim();
-if (!prompt) return alert('Enter an edit prompt first.');
-const scope = el('applyTo').value;
-const targets = scope === 'all' ? chapterImages : [chapterImages[selectedIndex]];
-const r = await fetch('/images/edit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt, images: targets }) });
-const res = await r.json();
-if (res && res.updated) {
-chapterImages = res.updated;
-renderThumbs();
-applySelection();
-}
-});
+    const el = id => document.getElementById(id);
+    const toast = (t) => { const n = el('toast'); n.textContent = t; n.style.display='block'; setTimeout(()=>n.style.display='none', 1400); };
 
+    if (!bookId) {
+      document.body.innerHTML = '<div style="padding:24px">Missing ?book=<ID> – open from the main UI.</div>';
+      throw new Error('no book id');
+    }
+    el('bookId').value = bookId;
 
-// Format modal
-const modal = el('formatModal');
-el('btnFormat').addEventListener('click', () => modal.showModal());
-el('btnDoFormat').addEventListener('click', async (ev) => {
-ev.preventDefault();
-const payload = {
-trim: el('optTrim').value,
-bleed: el('optBleed').value === 'yes',
-font: el('optFont').value,
-line_height: parseFloat(el('optLH').value),
-bg_style: el('optBG').value
-};
-const r = await fetch(API('/format'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-const { pdf_url } = await r.json();
-modal.close();
-if (pdf_url) {
-const a = document.createElement('a');
-a.href = pdf_url; a.download = '';
-a.click();
-}
-});
+    let meta = null;
+    let currentChapter = 0;
+    let chapterImages = [];
+    let selectedIndex = -1;
 
+    // ------- load book.json -------
+    (async function init(){
+      const r = await fetch(`/media/books/${bookId}/book.json?ts=${Date.now()}`, { cache:'no-store' });
+      meta = await r.json();
+      el('hdrTitle').textContent = meta.title || '';
+      // chapters
+      const sel = el('chapSelect');
+      sel.innerHTML = '';
+      (meta.pages || []).forEach((p,i)=>{
+        const opt = document.createElement('option');
+        opt.value = i; opt.textContent = `Chapter ${i+1}`;
+        sel.appendChild(opt);
+      });
+      loadChapter(0);
+    })().catch(e => { console.error(e); alert('Failed to load book.'); });
 
-// Init
-loadBook();
-</script>
+    function loadChapter(i){
+      currentChapter = i;
+      const page = meta.pages[i];
+      chapterImages = page.image_urls || [];
+      el('chapterText').value = page.text || '';
+      renderThumbs();
+    }
+
+    function renderThumbs(){
+      const g = el('gallery'); g.innerHTML = '';
+      selectedIndex = -1; el('btnApplyEdit').disabled = true;
+      chapterImages.forEach((url, idx)=>{
+        const b = document.createElement('button');
+        b.className = 'rounded-xl overflow-hidden border';
+        b.innerHTML = `<img src="${url}"><div style="font-size:12px;margin-top:4px">Image ${idx+1}</div>`;
+        b.onclick = () => { selectedIndex = idx; [...g.children].forEach(x=>x.style.outline=''); b.style.outline='3px solid #888'; el('btnApplyEdit').disabled = false; };
+        g.appendChild(b);
+      })
+    }
+
+    // ===== EVENTS =====
+    el('chapSelect').addEventListener('change', (e)=>{
+      currentChapter = parseInt(e.target.value, 10);
+      loadChapter(currentChapter);
+    });
+
+    el('btnSaveText').addEventListener('click', async ()=>{
+      const text = el('chapterText').value;
+      const r = await fetch(`/books/${bookId}/edit-text`, {
+        method:'PUT', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ chapter_index: currentChapter, markdown: text })
+      });
+      toast(await r.text());
+      el('saveStatus').textContent = r.ok ? 'Saved ✓' : 'Failed';
+      setTimeout(()=> el('saveStatus').textContent='', 1200);
+    });
+
+    el('btnApplyEdit').addEventListener('click', async ()=>{
+      const prompt = el('editPrompt').value.trim();
+      if (!prompt) { alert('Enter an edit prompt first.'); return; }
+      if (selectedIndex < 0) { alert('Select an image.'); return; }
+      el('imgStatus').textContent = 'Updating…';
+      const r = await fetch(`/books/${bookId}/edit-image`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ chapter_index: currentChapter, image_index: selectedIndex, prompt })
+      });
+      const j = await r.json().catch(()=>({}));
+      el('imgStatus').textContent = r.ok ? 'Updated ✓ (refresh to see changes)' : 'Failed';
+      // replace thumb src to bust cache
+      if (r.ok) {
+        const g = el('gallery');
+        const img = g.querySelectorAll('img')[selectedIndex];
+        if (img) img.src = (j.url || img.src) + `?t=${Date.now()}`;
+      }
+      setTimeout(()=> el('imgStatus').textContent = '', 1200);
+    });
+
+    // ===== Format modal-less quick action =====
+    el('btnDoFormat').addEventListener('click', async ()=>{
+      const payload = { trim: '8.5x8.5', bleed: false, font: 'Literata', line_height: 1.6, bg_style: 'blur' };
+      const r = await fetch(`/books/${bookId}/format`, {
+        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)
+      });
+      const j = await r.json().catch(()=>({}));
+      if (!r.ok || !j.pdf_url) { alert(j.detail || 'Format failed.'); return; }
+      window.open(j.pdf_url, '_blank', 'noopener');
+    });
+  </script>
 </body>
 </html>
