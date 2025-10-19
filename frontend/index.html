@@ -39,7 +39,7 @@
     .create-form input, .create-form textarea { width: 100%; margin: 5px 0; padding: 8px; font-size: 1em; }
     .create-form button { margin-top: 10px; }
 
-    /* ===== Book Builder form (nice prompt layout) ===== */
+    /* ===== Book Builder form ===== */
     .book-form{
       display:grid;
       grid-template-columns: 1.6fr 0.7fr 1fr 120px 160px;
@@ -92,6 +92,10 @@
       margin-top:10px; display:flex; align-items:center; justify-content:space-between; gap:12px;
     }
     .viewer-meta{ color:#555; font-size:.95em; }
+
+    /* ===== Edit view ===== */
+    .img-card { border:1px solid var(--border); background:var(--card); box-shadow:var(--shadow); border-radius:10px; padding:6px; cursor:pointer; }
+    .img-card.selected { outline:3px solid #888; }
   </style>
 </head>
 <body>
@@ -154,6 +158,12 @@
       </div>
     </div>
 
+    <!-- Toolbar shown when a book is open -->
+    <div id="book-view-toolbar" style="display:none; margin: 8px 0 12px 0; gap: 8px;">
+      <button id="btnBackShelf" class="btn">← Back to Books</button>
+      <button id="btnEditBook" class="btn">Edit this book</button>
+    </div>
+
     <!-- Live Book Viewer -->
     <div id="book-viewer" class="viewer" style="display:none;">
       <div class="spread">
@@ -183,11 +193,44 @@
   </div>
 
   <!-- =============== Books Shelf (click to open viewer) =============== -->
-  <div class="card">
+  <div class="card" id="shelf-card">
     <h2>Books Shelf</h2>
     <p class="muted">Saved books from <code>/books/list</code>. Click any cover to open in the viewer.</p>
     <div id="shelf" class="shelf"></div>
     <div id="shelf-empty" class="empty" style="display:none;">No books yet. Create one above 👆</div>
+  </div>
+
+  <!-- =============== Edit View =============== -->
+  <div class="card" id="edit-view" style="display:none; margin-top:12px;">
+    <div style="margin: 8px 0 12px 0; gap: 8px;">
+      <button class="btn" id="btnBackToBook">← Back to Book</button>
+      <button class="btn" id="btnBackToShelf">← Back to Books</button>
+    </div>
+
+    <h3 id="edit-title" style="margin:8px 0;"></h3>
+
+    <label>Chapter</label>
+    <select id="edit-chapter"></select>
+
+    <label style="margin-top:8px; display:block;">Text (Markdown)</label>
+    <textarea id="edit-text" rows="12" style="width:100%;"></textarea>
+    <div style="margin-top:6px;">
+      <button id="btnSaveText" class="btn">Save Text</button>
+      <span id="saveTextStatus" style="margin-left:8px;"></span>
+    </div>
+
+    <hr>
+
+    <div id="edit-images" style="display:flex; flex-wrap:wrap;"></div>
+
+    <div style="margin-top:12px;">
+      <label>Image edit prompt:</label>
+      <textarea id="img-edit-prompt" rows="3" style="width:100%;" placeholder="e.g., make the dragon a bit smaller, add soft moonlight"></textarea>
+      <div style="margin-top:6px;">
+        <button id="btnApplyImgEdit" class="btn" disabled>Apply to Selected Image</button>
+        <span id="imgEditStatus" style="margin-left:8px;"></span>
+      </div>
+    </div>
   </div>
 
   <!-- =============== Media Gallery (optional) =============== -->
@@ -303,7 +346,7 @@
     const nextBtn = document.getElementById('next');
     const openJsonBtn = document.getElementById('open-json');
 
-    let currentBook = null;   // { id, title, pages:[{chapter_index,text,image_urls:[]}, ...], created_at, cover_url }
+    let currentBook = null;   // { id, title, pages:[{chapter_index,text,image_urls:[]}, ...] }
     let pageIndex = 0;
 
     function renderPage() {
@@ -327,7 +370,7 @@
       window.open(`${API_BASE}/books/${currentBook.id}`, '_blank');
     });
 
-    // Compose a new book now
+    // Compose book
     document.getElementById('btn-book').addEventListener('click', async () => {
       const prompt = document.getElementById('b-prompt').value.trim();
       const age = document.getElementById('b-age').value.trim() || '4-7';
@@ -350,10 +393,13 @@
           throw new Error(err.detail || 'Book compose failed');
         }
         currentBook = await res.json();
+        window.currentBookId = currentBook.id;
         pageIndex = 0;
         renderPage();
+        document.getElementById('book-view-toolbar').style.display = 'block';
         status.textContent = 'Done.';
         await Promise.all([loadBooks(), loadMedia(), loadStories()]);
+        window.location.hash = '#view:' + currentBook.id;
       } catch (e) {
         status.textContent = '';
         alert(e.message || 'Book compose failed.');
@@ -378,14 +424,7 @@
         for (const b of items) {
           const card = document.createElement('div');
           card.className = 'book-card';
-          card.onclick = async () => {
-            const r = await fetch(`${API_BASE}/books/${b.id}`);
-            if (!r.ok) { alert('Could not open book'); return; }
-            currentBook = await r.json();
-            pageIndex = 0;
-            renderPage();
-            window.scrollTo({top: document.getElementById('book-card').offsetTop - 8, behavior:'smooth'});
-          };
+          card.onclick = () => { location.hash = '#view:' + b.id; };
           const cover = document.createElement('div'); cover.className = 'book-cover';
           if (b.cover_url) {
             const img = document.createElement('img');
@@ -411,6 +450,135 @@
       }
     }
 
+    /* ================= Edit View ================= */
+    async function fetchBook(id) {
+      const r = await fetch(`/books/${id}`);
+      if (!r.ok) throw new Error('Could not open book');
+      return await r.json();
+    }
+
+    function showOnly(idsToShow) {
+      // Toggle viewer, toolbar, and edit view. Shelf always stays visible unless we explicitly hide.
+      const ids = ['book-viewer', 'book-view-toolbar', 'edit-view'];
+      ids.forEach(id => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.style.display = idsToShow.includes(id) ? (id === 'book-view-toolbar' ? 'block' : '') : 'none';
+      });
+    }
+
+    async function renderBookView(id) {
+      const data = await fetchBook(id);
+      currentBook = data;
+      window.currentBookId = data.id;
+      pageIndex = 0;
+      renderPage();
+      document.getElementById('book-view-toolbar').style.display = 'block';
+      showOnly(['book-viewer', 'book-view-toolbar']);
+      // scroll to viewer
+      window.scrollTo({ top: document.getElementById('book-card').offsetTop - 8, behavior: 'smooth' });
+    }
+
+    async function renderShelf() {
+      await loadBooks();
+      showOnly([]); // hides viewer/edit, leaves shelf visible
+      // scroll to shelf
+      window.scrollTo({ top: document.getElementById('shelf-card').offsetTop - 8, behavior: 'smooth' });
+    }
+
+    async function renderEditView(bookId) {
+      window.currentBookId = bookId;
+      const data = await fetch(`/media/books/${bookId}/book.json`).then(r => r.json());
+
+      showOnly(['edit-view']);
+      document.getElementById('edit-title').textContent = data.title || 'Untitled';
+
+      const sel = document.getElementById('edit-chapter');
+      sel.innerHTML = '';
+      (data.pages || []).forEach((p, i) => {
+        const opt = document.createElement('option');
+        opt.value = i; opt.textContent = `Chapter ${i+1}`;
+        sel.appendChild(opt);
+      });
+
+      function loadChapter(idx) {
+        const page = data.pages[idx];
+        document.getElementById('edit-text').value = page.text || '';
+        renderImages(idx);
+      }
+
+      function renderImages(idx) {
+        const wrap = document.getElementById('edit-images');
+        wrap.innerHTML = '';
+        const imgs = (data.pages[idx].image_urls || []);
+        imgs.forEach((url, ii) => {
+          const card = document.createElement('button');
+          card.className = 'img-card';
+          card.style.margin = '6px';
+          card.innerHTML = `<img src="${url}" style="height:120px;object-fit:cover;display:block;"><div style="font-size:12px;">Image ${ii+1}</div>`;
+          card.onclick = () => {
+            document.querySelectorAll('#edit-images .img-card').forEach(b => b.classList.remove('selected'));
+            card.classList.add('selected');
+            document.getElementById('btnApplyImgEdit').disabled = false;
+            document.getElementById('btnApplyImgEdit').dataset.sel = `${idx}:${ii}`;
+          };
+          wrap.appendChild(card);
+        });
+      }
+
+      sel.onchange = () => loadChapter(parseInt(sel.value,10));
+      if ((data.pages || []).length) loadChapter(0);
+
+      // save text -> PUT /books/{id}/edit-text
+      document.getElementById('btnSaveText').onclick = async () => {
+        const idx = parseInt(sel.value,10);
+        const markdown = document.getElementById('edit-text').value;
+        const res = await fetch(`/books/${bookId}/edit-text`, {
+          method: 'PUT',
+          headers: {'content-type':'application/json'},
+          body: JSON.stringify({ chapter_index: idx, markdown })
+        });
+        const ok = res.ok;
+        document.getElementById('saveTextStatus').textContent = ok ? 'Saved ✓' : 'Failed';
+        setTimeout(() => (document.getElementById('saveTextStatus').textContent = ''), 1500);
+      };
+
+      // apply image edit -> POST /books/{id}/edit-image
+      document.getElementById('btnApplyImgEdit').onclick = async () => {
+        const selStr = document.getElementById('btnApplyImgEdit').dataset.sel;
+        if (!selStr) return;
+        const [ci, ii] = selStr.split(':').map(n => parseInt(n,10));
+        const prompt = document.getElementById('img-edit-prompt').value.trim();
+        if (!prompt) return;
+        const status = document.getElementById('imgEditStatus');
+        status.textContent = 'Updating…';
+        const res = await fetch(`/books/${bookId}/edit-image`, {
+          method: 'POST',
+          headers: {'content-type':'application/json'},
+          body: JSON.stringify({ chapter_index: ci, image_index: ii, prompt })
+        });
+        const j = await res.json().catch(()=>({}));
+        status.textContent = res.ok ? 'Updated ✓ (image cache may take a moment)' : 'Failed';
+        if (res.ok) {
+          const imgEls = document.querySelectorAll('#edit-images img');
+          const selectedIdx = Array.from(document.querySelectorAll('#edit-images .img-card')).findIndex(b => b.classList.contains('selected'));
+          if (imgEls[selectedIdx]) imgEls[selectedIdx].src = (j.url || imgEls[selectedIdx].src) + `?t=${Date.now()}`;
+        }
+        setTimeout(() => (status.textContent = ''), 1500);
+      };
+
+      // back buttons
+      document.getElementById('btnBackToBook').onclick = () => { location.hash = '#view:' + bookId; };
+      document.getElementById('btnBackToShelf').onclick = () => { location.hash = '#shelf'; };
+    }
+
+    // viewer toolbar buttons
+    document.getElementById('btnBackShelf').onclick = () => { location.hash = '#shelf'; };
+    document.getElementById('btnEditBook').onclick = () => {
+      if (!window.currentBookId) return;
+      location.hash = '#edit:' + window.currentBookId;
+    };
+
     /* ================= Media Gallery (optional) ================= */
     async function loadMedia() {
       const grid = document.getElementById('media-list');
@@ -433,10 +601,25 @@
     }
     document.getElementById('btn-media-refresh').addEventListener('click', loadMedia);
 
+    // ============== Hash Router ==============
+    window.addEventListener('hashchange', routeFromHash);
+    async function routeFromHash() {
+      const h = location.hash || '#shelf';
+      if (h.startsWith('#view:')) {
+        const id = h.split(':')[1];
+        await renderBookView(id);
+      } else if (h.startsWith('#edit:')) {
+        const id = h.split(':')[1];
+        await renderEditView(id);
+      } else {
+        await renderShelf();
+      }
+    }
+
     // Initial loads
     loadStories();
-    loadBooks();
     loadMedia();
+    routeFromHash(); // decides shelf/view/edit
   </script>
 </body>
 </html>
