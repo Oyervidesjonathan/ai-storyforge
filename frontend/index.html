@@ -5,121 +5,126 @@
   <title>AI StoryForge 📖</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <style>
-    body { font-family: Arial, sans-serif; background: #faf6f2; color: #333; padding: 20px; }
+    :root{
+      --bg:#faf6f2; --ink:#333; --muted:#666; --card:#fff; --shadow:0 2px 4px rgba(0,0,0,0.1);
+      --accent:#333; --accent-2:#555; --border:#eee;
+    }
+    *{ box-sizing:border-box; }
+    body { font-family: Arial, sans-serif; background: var(--bg); color: var(--ink); padding: 20px; }
     h1 { text-align: center; }
+    h2 { margin: 0 0 10px 0; }
 
-    /* ===== Stories styles (unchanged) ===== */
+    /* ===== Common ===== */
+    .card { background:var(--card); padding:20px; margin-top:20px; border-radius:8px; box-shadow:var(--shadow); }
+    .muted { color:var(--muted); font-size: 0.95em; }
+    .btn { background:var(--accent); color:#fff; border:none; border-radius:8px; padding:8px 12px; cursor:pointer; }
+    .btn:hover{ background:var(--accent-2); }
+    .hr { height:1px; background:var(--border); margin:16px 0; }
+    .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap:12px; }
+    .thumb { border:1px solid var(--border); border-radius:8px; overflow:hidden; box-shadow:0 2px 4px rgba(0,0,0,0.08); background:#fff; }
+    .thumb img { display:block; width:100%; height:auto; }
+    .empty { color:#666; text-align:center; padding:18px 8px; }
+
+    /* ===== Stories (unchanged styles) ===== */
     .story-list { display: flex; flex-direction: column; gap: 10px; margin-top: 20px; }
-    .story-card { padding: 12px; background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer; position: relative; }
+    .story-card { padding: 12px; background: white; border-radius: 8px; box-shadow: var(--shadow); cursor: pointer; position: relative; }
     .story-card:hover { background: #f1ece7; }
     .story-title { font-size: 1.2em; margin-bottom: 4px; }
     .story-meta { font-size: 0.9em; color: #666; }
-    .story-view { margin-top: 20px; padding: 20px; background: #fff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-    .back-btn { margin-top: 15px; background: #333; color: white; padding: 8px 12px; border: none; border-radius: 6px; cursor: pointer; }
-    .back-btn:hover { background: #555; }
+    .story-view { margin-top: 20px; padding: 20px; background: #fff; border-radius: 8px; box-shadow: var(--shadow); }
+    .back-btn { margin-top: 15px; }
     .delete-btn { position: absolute; top: 10px; right: 10px; background: none; border: none; cursor: pointer; font-size: 1.2em; }
     .delete-btn:hover { color: red; }
-    .create-form { background: #fff; padding: 20px; margin-top: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+    .create-form { background: #fff; padding: 20px; margin-top: 20px; border-radius: 8px; box-shadow: var(--shadow); }
     .create-form input, .create-form textarea { width: 100%; margin: 5px 0; padding: 8px; font-size: 1em; }
-    .create-form button { margin-top: 10px; background: #333; color: white; padding: 8px 12px; border: none; border-radius: 6px; cursor: pointer; }
-    .create-form button:hover { background: #555; }
+    .create-form button { margin-top: 10px; }
 
-    /* ===== Cards + media ===== */
-    .card { background:#fff; padding:20px; margin-top:20px; border-radius:8px; box-shadow:0 2px 4px rgba(0,0,0,0.1); }
-    .muted { color:#666; font-size: 0.9em; }
-    .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap:12px; margin-top: 10px; }
-    .thumb { border:1px solid #eee; border-radius:8px; overflow:hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.08); background:#fff; }
-    .thumb img { display:block; width:100%; height:auto; }
-    .hr { height:1px; background:#eee; margin:16px 0; }
-    .empty { color:#666; text-align:center; padding:18px 8px; }
-
-    /* ===== Book builder form ===== */
+    /* ===== Book Builder form (nice prompt layout) ===== */
     .book-form{
       display:grid;
-      grid-template-columns: 1.6fr 0.8fr 1fr 120px 160px; /* prompt | age | style | chapters | images/ch */
+      grid-template-columns: 1.6fr 0.7fr 1fr 120px 160px;
       gap:12px 16px;
       align-items:end;
       margin-top:10px;
     }
     .book-form .field label{ display:block; font-weight:600; margin-bottom:4px; }
-    .book-form textarea,.book-form input,.book-form select{
-      width:100%; box-sizing:border-box; font-size:1em; padding:8px;
-    }
+    .book-form textarea,.book-form input,.book-form select{ width:100%; padding:8px; font-size:1em; }
     #b-prompt{ min-height:56px; resize:vertical; }
-    .book-actions{ grid-column:1 / -1; display:flex; align-items:center; gap:12px; margin-top:6px; }
-    @media (max-width: 960px){ .book-form{ grid-template-columns: 1fr; } }
+    .book-actions{ grid-column:1 / -1; display:flex; gap:12px; align-items:center; }
+
+    @media (max-width: 980px){
+      .book-form{ grid-template-columns: 1fr; }
+    }
+
+    /* ===== Books shelf ===== */
+    .shelf { display:grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap:14px; margin-top:10px; }
+    .book-card { background:#fff; border:1px solid var(--border); border-radius:10px; overflow:hidden; box-shadow:0 2px 6px rgba(0,0,0,.06); cursor:pointer; display:flex; flex-direction:column; }
+    .book-cover { aspect-ratio: 4/5; background:#f7f7f7; display:flex; align-items:center; justify-content:center; }
+    .book-cover img{ width:100%; height:100%; object-fit:cover; }
+    .book-meta { padding:10px; }
+    .book-title { font-size:.95em; font-weight:600; line-height:1.2; height:2.4em; overflow:hidden; }
+    .book-sub { color:#777; font-size:.85em; margin-top:4px; }
 
     /* ===== Flip viewer ===== */
     .viewer { margin-top:16px; }
     .spread {
-      display:grid;
-      grid-template-columns: 1fr 1fr;
-      gap:16px;
-      min-height: 480px;
-      border-radius: 12px;
-      overflow: hidden;
-      box-shadow: 0 4px 10px rgba(0,0,0,0.08);
-      background:#fff;
+      display:grid; grid-template-columns: 1fr 1fr; gap:16px;
+      min-height: 520px; border-radius: 12px; overflow: hidden;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.08); background:#fff;
     }
     .left-page {
-      position: relative;
-      padding: 20px;
-      display:flex;
-      align-items:flex-start;
-      justify-content:flex-start;
-      overflow:hidden;
+      position: relative; padding: 20px;
+      display:flex; align-items:flex-start; justify-content:flex-start; overflow:hidden;
     }
     .left-bg {
       position:absolute; inset:0;
       background-size:cover; background-position:center;
-      filter: blur(12px) brightness(1.05);
+      filter: blur(14px) brightness(1.05);
       transform: scale(1.1);
       opacity: 0.35;
     }
-    .left-overlay { position:absolute; inset:0; background:linear-gradient(90deg, rgba(255,255,255,0.9), rgba(255,255,255,0.6)); }
-    .left-content { position:relative; z-index:2; max-width: 90%; line-height:1.6; }
-    .right-page {
-      display:flex; align-items:center; justify-content:center;
-      background: #fafafa;
-    }
+    .left-overlay { position:absolute; inset:0; background:linear-gradient(90deg, rgba(255,255,255,0.92), rgba(255,255,255,0.65)); }
+    .left-content { position:relative; z-index:2; max-width: 92%; line-height:1.6; }
+    .left-content h3{ margin:0 0 8px 0; }
+    .right-page { display:flex; align-items:center; justify-content:center; background: #fafafa; }
     .right-page img { width:100%; height:auto; object-fit:contain; }
     .viewer-toolbar{
       margin-top:10px; display:flex; align-items:center; justify-content:space-between; gap:12px;
     }
-    .viewer-toolbar .btn{
-      background:#333; color:#fff; border:none; border-radius:8px; padding:8px 12px; cursor:pointer;
-    }
-    .viewer-toolbar .btn:disabled{ opacity:0.5; cursor:not-allowed; }
     .viewer-meta{ color:#555; font-size:.95em; }
   </style>
 </head>
 <body>
   <h1>📚 AI StoryForge</h1>
 
-  <!-- Stories (unchanged) -->
+  <!-- =============== Stories (unchanged) =============== -->
   <div class="create-form">
     <h2>Create a New Story</h2>
     <label>Prompt:</label>
     <textarea id="new-prompt" placeholder="e.g. A shy dragon who learns to fly"></textarea>
+
     <label>Age Range:</label>
     <input id="new-age" type="text" value="4-7">
+
     <label>Style:</label>
     <input id="new-style" type="text" value="bedtime, friendly">
+
     <label>Chapters:</label>
     <input id="new-chapters" type="number" value="1" min="1" max="10">
-    <button onclick="createStory()">➕ Generate Story</button>
+
+    <button class="btn" onclick="createStory()">➕ Generate Story</button>
   </div>
 
   <div id="story-list" class="story-list"></div>
   <div id="story-view" class="story-view" style="display:none;"></div>
 
-  <!-- Book Builder -->
+  <!-- =============== Book Builder =============== -->
   <div class="card" id="book-card">
     <h2>Create an Illustrated Book</h2>
-    <p class="muted">Each chapter gets 1–3 images. We’ll lay it out as a two-page spread (left text, right image) you can flip through.</p>
+    <p class="muted">Generates a book and lays it out as a two-page spread (left text with soft background, right image). The book is saved to <code>/media/books/&lt;id&gt;/book.json</code>.</p>
 
     <div class="book-form">
-      <div class="field" style="grid-column:auto;">
+      <div class="field">
         <label for="b-prompt">Prompt</label>
         <textarea id="b-prompt" placeholder="A friendly dragon under a starry sky, picture-book style"></textarea>
       </div>
@@ -144,7 +149,7 @@
         </select>
       </div>
       <div class="book-actions">
-        <button id="btn-book">🎨 Generate Book</button>
+        <button id="btn-book" class="btn">🎨 Generate Book</button>
         <span id="b-status" class="muted"></span>
       </div>
     </div>
@@ -175,15 +180,21 @@
         </div>
       </div>
     </div>
-
-    <div id="book-out" style="margin-top:14px;"></div>
   </div>
 
-  <!-- Media Gallery -->
+  <!-- =============== Books Shelf (click to open viewer) =============== -->
+  <div class="card">
+    <h2>Books Shelf</h2>
+    <p class="muted">Saved books from <code>/books/list</code>. Click any cover to open in the viewer.</p>
+    <div id="shelf" class="shelf"></div>
+    <div id="shelf-empty" class="empty" style="display:none;">No books yet. Create one above 👆</div>
+  </div>
+
+  <!-- =============== Media Gallery (optional) =============== -->
   <div class="card" id="media-card">
     <h2>Media Gallery</h2>
-    <p class="muted">From <code>/debug/media</code>. Click any thumbnail to open via <code>/media/…</code>.</p>
-    <button id="btn-media-refresh">🔄 Refresh</button>
+    <p class="muted">Files from <code>/debug/media</code>. Click a thumbnail to open via <code>/media/…</code>.</p>
+    <button id="btn-media-refresh" class="btn">🔄 Refresh</button>
     <div id="media-list" class="grid"></div>
     <div id="media-empty" class="empty" style="display:none;">No media yet.</div>
   </div>
@@ -191,29 +202,46 @@
   <script>
     const API_BASE = window.location.origin;
 
-    /* ===== Stories (unchanged) ===== */
+    /* ================= Stories (unchanged logic) ================= */
     async function loadStories() {
       const res = await fetch(`${API_BASE}/stories`);
       const stories = await res.json();
+
       const list = document.getElementById('story-list');
       list.innerHTML = '';
+
       if (stories.length === 0) {
         list.innerHTML = '<p>No stories yet. Create one above 👆</p>';
         return;
       }
+
       stories.forEach(story => {
-        const card = document.createElement('div'); card.className = 'story-card';
-        const del = document.createElement('button'); del.textContent='🗑️'; del.className='delete-btn';
-        del.onclick = async (e) => {
+        const card = document.createElement('div');
+        card.className = 'story-card';
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.textContent = '🗑️';
+        deleteBtn.className = 'delete-btn';
+        deleteBtn.onclick = async (e) => {
           e.stopPropagation();
           if (confirm(`Delete "${story.title}"?`)) {
-            const r = await fetch(`${API_BASE}/stories/${story.id}`, { method: 'DELETE' });
-            if (r.ok) loadStories(); else alert('Failed to delete story.');
+            const res = await fetch(`${API_BASE}/stories/${story.id}`, { method: 'DELETE' });
+            if (res.ok) loadStories();
+            else alert('Failed to delete story.');
           }
         };
-        const title = document.createElement('div'); title.className='story-title'; title.textContent = story.title;
-        const meta = document.createElement('div'); meta.className='story-meta'; meta.textContent = `${story.chapters_count} chapter(s)`;
-        card.append(del, title, meta);
+
+        const titleDiv = document.createElement('div');
+        titleDiv.className = 'story-title';
+        titleDiv.textContent = story.title;
+
+        const metaDiv = document.createElement('div');
+        metaDiv.className = 'story-meta';
+        metaDiv.textContent = `${story.chapters_count} chapter(s)`;
+
+        card.appendChild(deleteBtn);
+        card.appendChild(titleDiv);
+        card.appendChild(metaDiv);
         card.onclick = () => viewStory(story.id);
         list.appendChild(card);
       });
@@ -222,13 +250,15 @@
     async function viewStory(id) {
       const res = await fetch(`${API_BASE}/stories/${id}`);
       const story = await res.json();
+
       const view = document.getElementById('story-view');
       view.style.display = 'block';
       view.innerHTML = `
         <h2>${story.title}</h2>
         ${story.chapters.map((c, i) => `<h3>Chapter ${i+1}</h3><p>${c}</p>`).join('')}
-        <button class="back-btn" onclick="backToList()">⬅ Back</button>
+        <button class="btn back-btn" onclick="backToList()">⬅ Back</button>
       `;
+
       document.getElementById('story-list').style.display = 'none';
       document.querySelector('.create-form').style.display = 'none';
     }
@@ -244,16 +274,25 @@
       const age = document.getElementById('new-age').value.trim();
       const style = document.getElementById('new-style').value.trim();
       const chapters = parseInt(document.getElementById('new-chapters').value);
+
       if (!prompt) { alert('Please enter a prompt.'); return; }
+
       const payload = { prompt, age_range: age, style, chapters };
       const res = await fetch(`${API_BASE}/stories`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
       });
-      if (res.ok) { await loadStories(); document.getElementById('new-prompt').value = ''; }
-      else { alert('Failed to generate story.'); }
+
+      if (res.ok) {
+        await loadStories();
+        document.getElementById('new-prompt').value = '';
+      } else {
+        alert('Failed to generate story.');
+      }
     }
 
-    /* ===== Book generation + viewer ===== */
+    /* ================= Book compose + viewer ================= */
     const viewerEl = document.getElementById('book-viewer');
     const leftBg = document.getElementById('left-bg');
     const leftText = document.getElementById('left-text');
@@ -264,7 +303,7 @@
     const nextBtn = document.getElementById('next');
     const openJsonBtn = document.getElementById('open-json');
 
-    let currentBook = null;   // { id, title, pages: [{chapter_index,text,image_urls[]}, ...] }
+    let currentBook = null;   // { id, title, pages:[{chapter_index,text,image_urls:[]}, ...], created_at, cover_url }
     let pageIndex = 0;
 
     function renderPage() {
@@ -278,6 +317,7 @@
       bookTitleEl.textContent = `• ${currentBook.title}`;
       prevBtn.disabled = pageIndex === 0;
       nextBtn.disabled = pageIndex === currentBook.pages.length - 1;
+      viewerEl.style.display = 'block';
     }
 
     prevBtn.addEventListener('click', () => { if (pageIndex > 0) { pageIndex--; renderPage(); } });
@@ -287,6 +327,7 @@
       window.open(`${API_BASE}/books/${currentBook.id}`, '_blank');
     });
 
+    // Compose a new book now
     document.getElementById('btn-book').addEventListener('click', async () => {
       const prompt = document.getElementById('b-prompt').value.trim();
       const age = document.getElementById('b-age').value.trim() || '4-7';
@@ -297,6 +338,7 @@
 
       const status = document.getElementById('b-status');
       status.textContent = 'Composing book (text + images)…';
+
       try {
         const res = await fetch(`${API_BASE}/books/compose`, {
           method:'POST',
@@ -307,14 +349,11 @@
           const err = await res.json().catch(()=>({detail:res.statusText}));
           throw new Error(err.detail || 'Book compose failed');
         }
-        const data = await res.json();
-        currentBook = data;
+        currentBook = await res.json();
         pageIndex = 0;
-        viewerEl.style.display = 'block';
         renderPage();
         status.textContent = 'Done.';
-        loadMedia(); // show images in gallery
-        loadStories(); // story saved as well
+        await Promise.all([loadBooks(), loadMedia(), loadStories()]);
       } catch (e) {
         status.textContent = '';
         alert(e.message || 'Book compose failed.');
@@ -322,7 +361,57 @@
       }
     });
 
-    /* ===== Media Gallery ===== */
+    /* ================= Books shelf ================= */
+    async function loadBooks() {
+      const shelf = document.getElementById('shelf');
+      const empty = document.getElementById('shelf-empty');
+      shelf.innerHTML = '';
+      empty.style.display = 'none';
+
+      try {
+        const res = await fetch(`${API_BASE}/books/list`);
+        const items = await res.json();
+        if (!Array.isArray(items) || items.length === 0) {
+          empty.style.display = 'block';
+          return;
+        }
+        for (const b of items) {
+          const card = document.createElement('div');
+          card.className = 'book-card';
+          card.onclick = async () => {
+            const r = await fetch(`${API_BASE}/books/${b.id}`);
+            if (!r.ok) { alert('Could not open book'); return; }
+            currentBook = await r.json();
+            pageIndex = 0;
+            renderPage();
+            window.scrollTo({top: document.getElementById('book-card').offsetTop - 8, behavior:'smooth'});
+          };
+          const cover = document.createElement('div'); cover.className = 'book-cover';
+          if (b.cover_url) {
+            const img = document.createElement('img');
+            img.src = b.cover_url;
+            img.alt = `${b.title} cover`;
+            cover.appendChild(img);
+          } else {
+            cover.innerHTML = '<span class="muted">No Cover</span>';
+          }
+          const meta = document.createElement('div'); meta.className = 'book-meta';
+          const t = document.createElement('div'); t.className = 'book-title'; t.textContent = b.title;
+          const sub = document.createElement('div'); sub.className = 'book-sub';
+          const d = b.created_at ? new Date(b.created_at*1000).toLocaleString() : '';
+          sub.textContent = d ? `Created ${d}` : '';
+          meta.append(t, sub);
+          card.append(cover, meta);
+          shelf.appendChild(card);
+        }
+      } catch (e) {
+        empty.style.display = 'block';
+        empty.textContent = 'Could not load books.';
+        console.error(e);
+      }
+    }
+
+    /* ================= Media Gallery (optional) ================= */
     async function loadMedia() {
       const grid = document.getElementById('media-list');
       const empty = document.getElementById('media-empty');
@@ -332,21 +421,21 @@
         const res = await fetch(`${API_BASE}/debug/media`);
         const data = await res.json();
         const items = (data && Array.isArray(data.items)) ? data.items : [];
-        if (items.length === 0) { empty.style.display='block'; return; }
+        if (items.length === 0) { empty.style.display = 'block'; return; }
         for (const it of items) {
-          const a = document.createElement('a'); a.className='thumb'; a.href = it.url; a.target='_blank'; a.rel='noopener';
+          const a = document.createElement('a'); a.className='thumb'; a.href = it.url; a.target = '_blank'; a.rel = 'noopener';
           const img = document.createElement('img'); img.src = it.url; img.alt = it.url.split('/').pop();
           a.appendChild(img); grid.appendChild(a);
         }
       } catch (e) {
-        empty.style.display = 'block';
-        empty.textContent = 'Could not list media.'; console.error(e);
+        empty.style.display = 'block'; empty.textContent = 'Could not list media.'; console.error(e);
       }
     }
     document.getElementById('btn-media-refresh').addEventListener('click', loadMedia);
 
-    // initial loads
+    // Initial loads
     loadStories();
+    loadBooks();
     loadMedia();
   </script>
 </body>
