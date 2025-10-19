@@ -118,7 +118,7 @@ class BookListItem(BaseModel):
 
 # ---------- Story Storage ----------
 STORIES: Dict[str, Dict] = {}
-STORIES_FILE = Path(__file__).parent / "stories.json"
+STORIES_FILE = DATA_ROOT / "stories.json"
 
 def save_stories():
     try:
