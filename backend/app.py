@@ -7,18 +7,17 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-
 from pydantic import BaseModel, Field, constr
 from openai import OpenAI
 
 SERVICE_NAME = "AI StoryForge"
-APP_VERSION  = "0.4.4"  # adds edit endpoints; cleans /books/list duplicates
+APP_VERSION  = "0.4.5"  # cleaned routes; stable shelf; clearer logs
 
 # ---------- OpenAI client ----------
 OPENAI_API_KEY     = os.getenv("OPENAI_API_KEY", "")
 OPENAI_ORG_ID      = os.getenv("OPENAI_ORG_ID", "")
 OPENAI_TEXT_MODEL  = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-OPENAI_IMAGE_MODEL = os.getenv("IMAGE_MODEL", "gpt-image-1")  # b64_json output
+OPENAI_IMAGE_MODEL = os.getenv("IMAGE_MODEL", "gpt-image-1")  # b64_json
 
 client: Optional[OpenAI]
 if not OPENAI_API_KEY:
@@ -49,7 +48,7 @@ if not DATA_ROOT.exists():
 DATA_ROOT.mkdir(parents=True, exist_ok=True)
 
 print("📂 MEDIA ROOT =", str(DATA_ROOT.resolve()))
-print("📦 Exists?", DATA_ROOT.exists(), "Writable?", os.access(DATA_ROOT, os.W_OK))
+print("📦 Exists? ", DATA_ROOT.exists(), "Writable? ", os.access(DATA_ROOT, os.W_OK))
 
 # Serve persisted files under /media
 app.mount("/media", StaticFiles(directory=DATA_ROOT), name="media")
@@ -108,7 +107,7 @@ class BookResponse(BaseModel):
     chapters: List[str]
     image_urls: Optional[List[str]] = None
 
-# list item for shelf
+# list item for shelf (for /bookshelf etc.)
 class BookListItem(BaseModel):
     id: str
     title: str
@@ -124,7 +123,7 @@ def save_stories():
     try:
         with open(STORIES_FILE, "w", encoding="utf-8") as f:
             json.dump(STORIES, f, ensure_ascii=False, indent=2)
-        print(f"💾 Saved {len(STORIES)} stories")
+        print(f"💾 Saved {len(STORIES)} stories to {STORIES_FILE}")
     except Exception as e:
         print(f"⚠️ Failed to save stories: {e}")
 
@@ -230,7 +229,7 @@ def _require_client():
     if client is None:
         raise HTTPException(status_code=500, detail="OPENAI_API_KEY is not configured in Railway Variables.")
 
-# ---------- Routes ----------
+# ---------- Root/health ----------
 @app.get("/", tags=["Root"])
 def root():
     return {"service": SERVICE_NAME, "docs": "/docs", "health": "/health"}
@@ -239,7 +238,66 @@ def root():
 def health():
     return {"ok": True, "ts": int(time.time())}
 
-# ---- Stories ----
+# ============================================================
+#                 BOOK SHELF (single implementation)
+# ============================================================
+BOOKS_DIR = DATA_ROOT / "books"
+IMG_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".svg")
+
+def _as_media_url(p: Path) -> str:
+    return f"/media/{p.relative_to(DATA_ROOT).as_posix()}"
+
+def _dir_mtime(p: Path) -> int:
+    try:
+        return int(max((f.stat().st_mtime for f in p.glob("**/*") if f.is_file()), default=p.stat().st_mtime))
+    except Exception:
+        return int(time.time())
+
+def _scan_books() -> List[BookListItem]:
+    items: List[BookListItem] = []
+    if not BOOKS_DIR.exists():
+        return items
+
+    for sub in BOOKS_DIR.iterdir():
+        if not sub.is_dir():
+            continue
+        jf = sub / "book.json"
+        if jf.exists():
+            try:
+                meta = json.loads(jf.read_text(encoding="utf-8"))
+                items.append(BookListItem(
+                    id=meta.get("id", sub.name),
+                    title=meta.get("title", f"Book {sub.name}"),
+                    cover_url=meta.get("cover_url"),
+                    created_at=meta.get("created_at", _dir_mtime(sub)),
+                    pages=len(meta.get("pages", [])),
+                ))
+                continue
+            except Exception as e:
+                print(f"⚠️ bad book.json in {sub}: {e}")
+        # legacy (image-only folders)
+        imgs = sorted([f for f in sub.iterdir() if f.is_file() and f.suffix.lower() in IMG_EXTS])
+        if imgs:
+            items.append(BookListItem(
+                id=sub.name, title=f"Book {sub.name}",
+                cover_url=_as_media_url(imgs[0]),
+                created_at=_dir_mtime(sub),
+                pages=len(imgs),
+            ))
+    items.sort(key=lambda x: x.created_at or 0, reverse=True)
+    print(f"📚 Shelf: {len(items)} books")
+    return items
+
+# Safe, unambiguous list endpoints (no duplicates)
+@app.get("/bookshelf", response_model=List[BookListItem], tags=["Books"])
+@app.get("/books/list", response_model=List[BookListItem], tags=["Books"])
+@app.get("/books/list/", response_model=List[BookListItem], tags=["Books"])
+def list_books():
+    return _scan_books()
+
+# ============================================================
+#                        STORIES
+# ============================================================
 @app.get("/stories", response_model=List[StoryItem], tags=["Stories"])
 def list_stories():
     items: List[StoryItem] = []
@@ -263,8 +321,10 @@ def get_story(story_id: str):
 @app.post("/stories", response_model=StoryResponse, tags=["Stories"])
 def generate_story(req: StoryRequest):
     _require_client()
+
     title = _title_from_prompt(req.prompt, req.age_range)
     chapter_prompts = _chapter_prompts(req.prompt, req.style, req.chapters)
+
     chapters: List[str] = []
     try:
         for cp in chapter_prompts:
@@ -287,6 +347,7 @@ def generate_story(req: StoryRequest):
     story_id = str(uuid.uuid4())
     STORIES[story_id] = {"title": title, "chapters": chapters, "created_at": int(time.time())}
     save_stories()
+    print(f"📝 Generated story '{title}' • chapters={len(chapters)} • id={story_id}")
     return StoryResponse(title=title, chapters=chapters)
 
 @app.delete("/stories/{story_id}", tags=["Stories"])
@@ -297,7 +358,9 @@ def delete_story(story_id: str):
     save_stories()
     return {"ok": True, "deleted_id": story_id}
 
-# ---- Images ----
+# ============================================================
+#                        IMAGES
+# ============================================================
 @app.post("/images", response_model=ImageResponse, tags=["Images"])
 def generate_image(req: ImageRequest):
     tmp_dir = DATA_ROOT / "tmp"
@@ -306,7 +369,10 @@ def generate_image(req: ImageRequest):
     rel = Path(abs_path).relative_to(DATA_ROOT)
     return ImageResponse(image_url=f"/media/{rel.as_posix()}")
 
-# ---- Books (legacy: one image/chapter) ----
+# ============================================================
+#                        BOOKS
+# ============================================================
+# LEGACY: one image per chapter
 @app.post("/books", response_model=BookResponse, tags=["Books"])
 def generate_book(req: BookRequest):
     story = generate_story(req.story)
@@ -326,7 +392,7 @@ def generate_book(req: BookRequest):
         final_id = str(uuid.uuid4())
     return BookResponse(id=final_id, title=story.title, chapters=story.chapters, image_urls=urls)
 
-# ---- Compose multi-image book & save book.json ----
+# Compose: multi images per chapter, and persist book.json
 @app.post("/books/compose", response_model=BookComposeResponse, tags=["Books"])
 def compose_book(req: BookComposeRequest):
     s = generate_story(req.story)
@@ -357,9 +423,8 @@ def compose_book(req: BookComposeRequest):
         "cover_url": cover_url,
         "created_at": int(time.time()),
     }
-    with open(book_dir / "book.json", "w", encoding="utf-8") as f:
-        json.dump(meta, f, ensure_ascii=False, indent=2)
-
+    (book_dir / "book.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"📖 Composed book {book_id} • pages={len(pages)} • dir={book_dir}")
     return BookComposeResponse(id=book_id, title=s.title, pages=pages, cover_url=cover_url)
 
 @app.get("/books/{book_id}", response_model=BookComposeResponse, tags=["Books"])
@@ -375,48 +440,76 @@ def read_book(book_id: str):
         cover_url=meta.get("cover_url"),
     )
 
-# ---- Books shelf listing (tolerant endpoints) ----
-def _scan_books() -> List[BookListItem]:
-    books_dir = DATA_ROOT / "books"
-    if not books_dir.exists():
-        return []
-    items: List[BookListItem] = []
-    for sub in books_dir.iterdir():
-        if not sub.is_dir():
-            continue
-        jf = sub / "book.json"
-        if not jf.exists():
-            continue
-        try:
-            meta = json.loads(jf.read_text(encoding="utf-8"))
-            items.append(BookListItem(
-                id=meta.get("id", sub.name),
-                title=meta.get("title", "Untitled"),
-                cover_url=meta.get("cover_url"),
-                created_at=meta.get("created_at"),
-                pages=len(meta.get("pages", [])),
-            ))
-        except Exception:
-            continue
-    items.sort(key=lambda x: x.created_at or 0, reverse=True)
-    return items
+# ============================================================
+#                        EDIT ENDPOINTS
+# ============================================================
+class ChapterTextPatch(BaseModel):
+    chapter_index: int
+    markdown: str
 
-# Accept GET/POST/OPTIONS and with/without trailing slash
-@app.api_route("/books/list", methods=["GET", "POST", "OPTIONS"], tags=["Books"])
-@app.api_route("/books/list/", methods=["GET", "POST", "OPTIONS"], tags=["Books"])
-def list_books_tolerant():
-    return _scan_books()
+class ImageEditReq(BaseModel):
+    chapter_index: int
+    image_index: int
+    prompt: str
 
-# Keep simple aliases too (GET)
-@app.get("/books", response_model=List[BookListItem], tags=["Books"])
-def list_books_alias_2():
-    return _scan_books()
+def _book_json_path(book_id: str) -> Path:
+    return (DATA_ROOT / "books" / book_id) / "book.json"
 
-@app.get("/bookshelf", response_model=List[BookListItem], tags=["Books"])
-def list_books_alias_3():
-    return _scan_books()
+def _load_book_json(book_id: str) -> dict:
+    jf = _book_json_path(book_id)
+    if not jf.exists():
+        raise HTTPException(status_code=404, detail="book.json not found")
+    return json.loads(jf.read_text(encoding="utf-8"))
 
-# ---- Debug helpers ----
+def _save_book_json(book_id: str, data: dict) -> None:
+    jf = _book_json_path(book_id)
+    jf.parent.mkdir(parents=True, exist_ok=True)
+    jf.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+def _media_url_to_abs(media_url: str) -> Path:
+    if not media_url.startswith("/media/"):
+        raise HTTPException(status_code=400, detail="expected a /media/... url")
+    rel = media_url[len("/media/"):]
+    return DATA_ROOT / rel
+
+@app.put("/books/{book_id}/edit-text", tags=["Books"])
+def edit_book_text(book_id: str, patch: ChapterTextPatch):
+    meta = _load_book_json(book_id)
+    pages = meta.get("pages", [])
+    if patch.chapter_index < 0 or patch.chapter_index >= len(pages):
+        raise HTTPException(status_code=400, detail="invalid chapter index")
+    pages[patch.chapter_index]["text"] = patch.markdown
+    meta["last_modified"] = int(time.time())
+    _save_book_json(book_id, meta)
+    return {"ok": True, "book_id": book_id, "chapter_index": patch.chapter_index}
+
+@app.post("/books/{book_id}/edit-image", tags=["Books"])
+def edit_book_image(book_id: str, req: ImageEditReq):
+    meta = _load_book_json(book_id)
+    pages = meta.get("pages", [])
+    if req.chapter_index < 0 or req.chapter_index >= len(pages):
+        raise HTTPException(status_code=400, detail="invalid chapter index")
+    page = pages[req.chapter_index]
+    img_urls = page.get("image_urls", [])
+    if req.image_index < 0 or req.image_index >= len(img_urls):
+        raise HTTPException(status_code=400, detail="invalid image index")
+
+    current_url = img_urls[req.image_index]
+    abs_path = _media_url_to_abs(current_url)
+    abs_path.parent.mkdir(parents=True, exist_ok=True)
+
+    tmp_stem = abs_path.parent / f"_tmp_{uuid.uuid4().hex}"
+    out_tmp = _gen_image_to_file(req.prompt.strip(), "square", tmp_stem)
+    os.replace(out_tmp, abs_path)
+
+    meta["last_modified"] = int(time.time())
+    page.setdefault("image_edits", {})
+    page["image_edits"][str(req.image_index)] = {"last_prompt": req.prompt, "ts": meta["last_modified"]}
+    _save_book_json(book_id, meta)
+    return {"ok": True, "book_id": book_id, "chapter_index": req.chapter_index,
+            "image_index": req.image_index, "url": current_url}
+
+# ---------- Debug helpers ----------
 @app.get("/debug/media")
 def debug_media():
     items = []
@@ -442,75 +535,7 @@ def debug_read_media(path: str = Query(..., description="Path relative to /media
         raise HTTPException(status_code=404, detail="not found")
     return {"root": str(DATA_ROOT), "path": path, "exists": True, "bytes": target.stat().st_size}
 
-# ---- Inline EDIT endpoints (direct on app) ----
-class ChapterTextPatch(BaseModel):
-    chapter_index: int
-    markdown: str
-
-class ImageEditReq(BaseModel):
-    chapter_index: int
-    image_index: int
-    prompt: str
-
-def _book_json_path_edit(book_id: str) -> Path:
-    return (DATA_ROOT / "books" / book_id) / "book.json"
-
-def _load_book_json_edit(book_id: str) -> dict:
-    jf = _book_json_path_edit(book_id)
-    if not jf.exists():
-        raise HTTPException(status_code=404, detail="book.json not found")
-    return json.loads(jf.read_text(encoding="utf-8"))
-
-def _save_book_json_edit(book_id: str, data: dict) -> None:
-    jf = _book_json_path_edit(book_id)
-    jf.parent.mkdir(parents=True, exist_ok=True)
-    jf.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-def _media_url_to_abs_edit(media_url: str) -> Path:
-    if not media_url.startswith("/media/"):
-        raise HTTPException(status_code=400, detail="expected a /media/... url")
-    rel = media_url[len("/media/"):]
-    return DATA_ROOT / rel
-
-@app.put("/books/{book_id}/edit-text", tags=["Books"])
-def edit_book_text(book_id: str, patch: ChapterTextPatch):
-    meta = _load_book_json_edit(book_id)
-    pages = meta.get("pages", [])
-    if patch.chapter_index < 0 or patch.chapter_index >= len(pages):
-        raise HTTPException(status_code=400, detail="invalid chapter index")
-    pages[patch.chapter_index]["text"] = patch.markdown
-    meta["last_modified"] = int(time.time())
-    _save_book_json_edit(book_id, meta)
-    return {"ok": True, "book_id": book_id, "chapter_index": patch.chapter_index}
-
-@app.post("/books/{book_id}/edit-image", tags=["Books"])
-def edit_book_image(book_id: str, req: ImageEditReq):
-    meta = _load_book_json_edit(book_id)
-    pages = meta.get("pages", [])
-    if req.chapter_index < 0 or req.chapter_index >= len(pages):
-        raise HTTPException(status_code=400, detail="invalid chapter index")
-    page = pages[req.chapter_index]
-    img_urls = page.get("image_urls", [])
-    if req.image_index < 0 or req.image_index >= len(img_urls):
-        raise HTTPException(status_code=400, detail="invalid image index")
-
-    current_url = img_urls[req.image_index]
-    abs_path = _media_url_to_abs_edit(current_url)
-    abs_path.parent.mkdir(parents=True, exist_ok=True)
-
-    tmp_stem = abs_path.parent / f"_tmp_{uuid.uuid4().hex}"
-    out_tmp = _gen_image_to_file(req.prompt.strip(), "square", tmp_stem)
-    os.replace(out_tmp, abs_path)
-
-    meta["last_modified"] = int(time.time())
-    page.setdefault("image_edits", {})
-    page["image_edits"][str(req.image_index)] = {"last_prompt": req.prompt, "ts": meta["last_modified"]}
-    _save_book_json_edit(book_id, meta)
-
-    return {"ok": True, "book_id": book_id, "chapter_index": req.chapter_index,
-            "image_index": req.image_index, "url": current_url}
-
-# ---- Route list on startup ----
+# ---------- Route list on startup ----------
 @app.on_event("startup")
 def _log_routes():
     paths = sorted({getattr(r, 'path', '') for r in app.routes})
@@ -518,67 +543,3 @@ def _log_routes():
     for p in paths:
         if p:
             print("  •", p)
-
-# ==== BOOK SHELF LISTING (safe, non-conflicting aliases) ====
-from pathlib import Path
-import json, time
-
-BOOKS_DIR = (DATA_ROOT / "books")
-IMG_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".svg")
-
-def _as_media_url(p: Path) -> str:
-    return f"/media/{p.relative_to(DATA_ROOT).as_posix()}"
-
-def _list_images(d: Path):
-    return sorted([f for f in d.iterdir() if f.is_file() and f.suffix.lower() in IMG_EXTS])
-
-def _dir_mtime(p: Path) -> int:
-    try:
-        return int(max((f.stat().st_mtime for f in p.glob("**/*") if f.is_file()), default=p.stat().st_mtime))
-    except Exception:
-        return int(time.time())
-
-def _scan_books():
-    items = []
-    if not BOOKS_DIR.exists():
-        return items
-    for sub in BOOKS_DIR.iterdir():
-        if not sub.is_dir():
-            continue
-        meta = None
-        jf = sub / "book.json"
-        if jf.exists():
-            try:
-                meta = json.loads(jf.read_text(encoding="utf-8"))
-                items.append({
-                    "id": meta.get("id", sub.name),
-                    "title": meta.get("title", f"Book {sub.name}"),
-                    "pages": len(meta.get("pages", [])),
-                    "cover_url": meta.get("cover_url"),
-                    "created_at": meta.get("created_at", _dir_mtime(sub)),
-                    "source": "json",
-                })
-                continue
-            except Exception as e:
-                print(f"⚠️ bad book.json in {sub}: {e}")
-        # legacy image-only folder
-        imgs = _list_images(sub)
-        if imgs:
-            items.append({
-                "id": sub.name,
-                "title": f"Book {sub.name}",
-                "pages": len(imgs),
-                "cover_url": _as_media_url(imgs[0]),
-                "created_at": _dir_mtime(sub),
-                "source": "legacy",
-            })
-    items.sort(key=lambda x: x.get("created_at", 0), reverse=True)
-    print(f"📚 Shelf: {len(items)} items (json={sum(i['source']=='json' for i in items)}, legacy={sum(i['source']=='legacy' for i in items)})")
-    return items
-
-@app.get("/bookshelf")
-@app.get("/books/list/")   # safe: trailing slash so it won't be captured by /books/{book_id}
-@app.get("/books")         # GET = list; POST /books remains your creator
-def list_books():
-    return _scan_books()
-
