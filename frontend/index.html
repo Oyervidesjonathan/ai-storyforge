@@ -492,7 +492,7 @@
       empty.style.display = 'none';
 
       try {
-        const res = await fetch(`${API_BASE}/books/list`);
+        const res = await fetch(`${API_BASE}/books`);
         const items = await res.json();
         if (!Array.isArray(items) || items.length === 0) {
           empty.style.display = 'block';
