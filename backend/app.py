@@ -12,13 +12,13 @@ from pydantic import BaseModel, Field, constr
 from openai import OpenAI
 
 SERVICE_NAME = "AI StoryForge"
-APP_VERSION  = "0.5.0"
+APP_VERSION  = "0.4.1"  # +books/list
 
 # ---------- OpenAI client ----------
 OPENAI_API_KEY     = os.getenv("OPENAI_API_KEY", "")
 OPENAI_ORG_ID      = os.getenv("OPENAI_ORG_ID", "")
 OPENAI_TEXT_MODEL  = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-OPENAI_IMAGE_MODEL = os.getenv("IMAGE_MODEL", "gpt-image-1")  # returns b64_json
+OPENAI_IMAGE_MODEL = os.getenv("IMAGE_MODEL", "gpt-image-1")  # b64_json output
 
 client: Optional[OpenAI]
 if not OPENAI_API_KEY:
@@ -41,7 +41,7 @@ app.add_middleware(
 frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
 app.mount("/static", StaticFiles(directory=frontend_dir), name="static")
 
-# Use mounted /data if present (MEDIA_ROOT=/data), else local ./data
+# Use mounted /data if present, else local ./data
 DEFAULT_MEDIA = Path(__file__).parent / "data"
 DATA_ROOT = Path(os.getenv("MEDIA_ROOT", "/data"))
 if not DATA_ROOT.exists():
@@ -82,18 +82,11 @@ class ImageRequest(BaseModel):
 class ImageResponse(BaseModel):
     image_url: str  # always a /media/... URL
 
-# Legacy book response (1 image per chapter)
 class BookRequest(BaseModel):
     story: StoryRequest
     images: bool = True
 
-class BookResponse(BaseModel):
-    id: str
-    title: str
-    chapters: List[str]
-    image_urls: Optional[List[str]] = None
-
-# Compose book (1–3 images per chapter) for the viewer
+# Pages used in compose endpoints
 class Page(BaseModel):
     chapter_index: int
     text: str
@@ -108,13 +101,12 @@ class BookComposeResponse(BaseModel):
     title: str
     pages: List[Page]
     cover_url: Optional[str] = None
-    created_at: int
 
-class BookListItem(BaseModel):
+class BookResponse(BaseModel):
     id: str
     title: str
-    created_at: int
-    cover_url: Optional[str] = None
+    chapters: List[str]
+    image_urls: Optional[List[str]] = None
 
 # ---------- Story Storage ----------
 STORIES: Dict[str, Dict] = {}
@@ -141,6 +133,7 @@ def load_stories():
     except Exception as e:
         print(f"⚠️ Failed to load stories: {e}")
         STORIES = {}
+
 load_stories()
 
 # ---------- Helpers ----------
@@ -201,32 +194,26 @@ def _placeholder_svg(title: str, w: int, h: int) -> str:
 </svg>"""
 
 def _gen_image_to_file(prompt: str, aspect: str, dest_stem: Path) -> Path:
-    """
-    Generate PNG via gpt-image-1 (returns b64_json by default).
-    On error or if model is unavailable, fall back to SVG placeholder.
-    """
+    """Generate PNG via gpt-image-1 (b64), fallback to SVG placeholder."""
     w, h = _image_size_px(aspect)
     dest_stem.parent.mkdir(parents=True, exist_ok=True)
     try:
         if client is None or not OPENAI_IMAGE_MODEL:
             raise RuntimeError("Images API not configured")
-
         resp = client.images.generate(
             model=OPENAI_IMAGE_MODEL,
             prompt=prompt,
-            size=_image_size(aspect),   # 1024x1024 | 1024x1536 | 1536x1024
+            size=_image_size(aspect),
             quality="high",
         )
         datum = resp.data[0] if getattr(resp, "data", None) else None
         b64 = getattr(datum, "b64_json", None)
         if not isinstance(b64, str) or not b64.strip():
             raise ValueError("No b64_json in image response")
-
         out = dest_stem.with_suffix(".png")
         with open(out, "wb") as f:
             f.write(base64.b64decode(b64))
         return out
-
     except Exception as e:
         print(f"⚠️ Image API failed, using placeholder: {e}")
         out = dest_stem.with_suffix(".svg")
@@ -313,7 +300,7 @@ def generate_image(req: ImageRequest):
     rel = Path(abs_path).relative_to(DATA_ROOT)
     return ImageResponse(image_url=f"/media/{rel.as_posix()}")
 
-# ---- Books (LEGACY: one image per chapter) ----
+# ---- Books (LEGACY, one image per chapter) ----
 @app.post("/books", response_model=BookResponse, tags=["Books"])
 def generate_book(req: BookRequest):
     story = generate_story(req.story)
@@ -333,20 +320,17 @@ def generate_book(req: BookRequest):
         final_id = str(uuid.uuid4())
     return BookResponse(id=final_id, title=story.title, chapters=story.chapters, image_urls=urls)
 
-# ---- NEW: Compose multi-image book & persist book.json ----
+# ---- NEW: Compose multi-image book & save book.json ----
 @app.post("/books/compose", response_model=BookComposeResponse, tags=["Books"])
 def compose_book(req: BookComposeRequest):
-    # 1) Generate the story text up front
-    s = generate_story(req.story)
-
-    # 2) Create book folder
+    s = generate_story(req.story)  # generates & persists the story
     book_id = str(uuid.uuid4())
     book_dir = DATA_ROOT / "books" / book_id
     book_dir.mkdir(parents=True, exist_ok=True)
 
-    # 3) Generate images per chapter
     pages: List[Page] = []
     cover_url: Optional[str] = None
+
     for idx, ch_text in enumerate(s.chapters, start=1):
         prompts = _image_prompts_for_chapter(s.title, ch_text, req.story.style, req.images_per_chapter)
         urls: List[str] = []
@@ -360,26 +344,17 @@ def compose_book(req: BookComposeRequest):
                 cover_url = url
         pages.append(Page(chapter_index=idx-1, text=ch_text, image_urls=urls))
 
-    created_at = int(time.time())
-
-    # 4) Persist book.json (used by /books/{id} and /books/list)
     meta = {
         "id": book_id,
         "title": s.title,
-        "pages": [page.model_dump() for page in pages],
+        "pages": [page.dict() for page in pages],
         "cover_url": cover_url,
-        "created_at": created_at,
+        "created_at": int(time.time()),
     }
     with open(book_dir / "book.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
 
-    return BookComposeResponse(
-        id=book_id,
-        title=s.title,
-        pages=pages,
-        cover_url=cover_url,
-        created_at=created_at,
-    )
+    return BookComposeResponse(id=book_id, title=s.title, pages=pages, cover_url=cover_url)
 
 @app.get("/books/{book_id}", response_model=BookComposeResponse, tags=["Books"])
 def read_book(book_id: str):
@@ -392,56 +367,61 @@ def read_book(book_id: str):
         title=meta["title"],
         pages=[Page(**p) for p in meta["pages"]],
         cover_url=meta.get("cover_url"),
-        created_at=int(meta.get("created_at", 0)),
     )
+
+# ---- Books shelf listing (cover + metadata) ----
+class BookListItem(BaseModel):
+    id: str
+    title: str
+    cover_url: Optional[str] = None
+    created_at: Optional[int] = None
+    pages: int
 
 @app.get("/books/list", response_model=List[BookListItem], tags=["Books"])
 def list_books():
     books_dir = DATA_ROOT / "books"
-    out: List[BookListItem] = []
     if not books_dir.exists():
-        return out
+        return []
+    items: List[BookListItem] = []
     for sub in books_dir.iterdir():
         if not sub.is_dir():
             continue
-        meta_file = sub / "book.json"
-        if not meta_file.exists():
+        jf = sub / "book.json"
+        if not jf.exists():
             continue
         try:
-            meta = json.loads(meta_file.read_text(encoding="utf-8"))
-            out.append(BookListItem(
+            meta = json.loads(jf.read_text(encoding="utf-8"))
+            items.append(BookListItem(
                 id=meta.get("id", sub.name),
                 title=meta.get("title", "Untitled"),
-                created_at=int(meta.get("created_at", 0)),
                 cover_url=meta.get("cover_url"),
+                created_at=meta.get("created_at"),
+                pages=len(meta.get("pages", [])),
             ))
         except Exception:
             continue
-    out.sort(key=lambda x: x.created_at, reverse=True)
-    return out
+    items.sort(key=lambda x: x.created_at or 0, reverse=True)
+    return items
 
 # ---- Debug helpers ----
 @app.get("/debug/media")
 def debug_media():
-    """List files under DATA_ROOT and show the active media root."""
     items = []
     for p in DATA_ROOT.rglob("*"):
         if p.is_file():
             rel = p.relative_to(DATA_ROOT).as_posix()
             items.append({"url": f"/media/{rel}", "bytes": p.stat().st_size})
-
-    def mtime_safe(item):
+    # recent first
+    def mtime(item):
         try:
             return (DATA_ROOT / item["url"].replace("/media/", "")).stat().st_mtime
         except Exception:
             return 0
-
-    items.sort(key=mtime_safe, reverse=True)
+    items.sort(key=mtime, reverse=True)
     return {"root": str(DATA_ROOT), "count": len(items), "items": items[:200]}
 
 @app.get("/debug/read")
 def debug_read_media(path: str = Query(..., description="Path relative to /media, e.g. tmp/abc.png or books/<id>/ch01_img1.png")):
-    """Confirm a specific file exists under DATA_ROOT."""
     p = Path(path)
     if p.is_absolute() or ".." in p.parts:
         raise HTTPException(status_code=400, detail="bad path")
