@@ -40,13 +40,19 @@ app.add_middleware(
 )
 
 # ---------- Static (frontend) + media ----------
-frontend_dir = Path(__file__).resolve().parents[1] / "frontend"
-if not frontend_dir.exists():
-    print(f"⚠️ frontend dir not found at {frontend_dir}")
+# Try multiple candidate locations for the frontend folder
+_front_cands = [
+    Path(__file__).resolve().parents[2] / "frontend",  # repo_root/frontend
+    Path(__file__).resolve().parents[1] / "frontend",  # backend/frontend
+    Path(__file__).resolve().parent / "frontend",      # backend/app/frontend
+]
+frontend_dir = next((p for p in _front_cands if p.exists()), None)
 
-# Serve your static frontend assets (index.html, editor_pro.html, etc.)
-# html=True lets /static/ render index.html automatically if requested directly.
-app.mount("/static", StaticFiles(directory=str(frontend_dir), html=True), name="static")
+if frontend_dir:
+    print(f"🖼️  Frontend dir = {frontend_dir}")
+    app.mount("/static", StaticFiles(directory=str(frontend_dir), html=True), name="static")
+else:
+    print("⚠️ Frontend dir not found in any known location. Skipping /static mount.")
 
 # Serve generated images and exported PDFs
 app.mount("/media", StaticFiles(directory=str(DATA_ROOT)), name="media")
@@ -61,21 +67,20 @@ def health():
     return {"ok": True, "ts": int(time.time())}
 
 # ---------- UI ----------
-# Old editor/landing
 @app.get("/ui")
 def ui():
+    if not frontend_dir:
+        raise HTTPException(status_code=404, detail="frontend not found; ensure /frontend exists in the repo")
     return FileResponse(str(frontend_dir / "index.html"))
 
-# New Pro Editor UI (served directly). Falls back to /ui if missing.
 @app.get("/editor")
 def editor_pro():
+    if not frontend_dir:
+        raise HTTPException(status_code=404, detail="frontend not found; ensure /frontend exists in the repo")
     p = frontend_dir / "editor_pro.html"
-    if p.exists():
-        return FileResponse(str(p))
-    # graceful fallback if the pro editor file isn't present
-    return FileResponse(str(frontend_dir / "index.html"))
+    return FileResponse(str(p if p.exists() else (frontend_dir / "index.html")))
 
-# ---------- Include feature router that creates/edits/books + formatter ----------
+# ---------- Include feature router ----------
 from backend.app.routers.books import router as books_router
 app.include_router(books_router)
 
@@ -128,12 +133,6 @@ def _load_json_book(folder: Path) -> Optional[BookListItem]:
         return None
 
 def _probe_legacy_book(folder: Path) -> Optional[BookListItem]:
-    """
-    Detect legacy book folders that only contain images (no book.json).
-    We consider two patterns:
-      - chXX_imgY.png
-      - page_XX.png
-    """
     if (folder / "book.json").exists():
         return None
 
@@ -192,11 +191,10 @@ def _scan_books() -> List[BookListItem]:
 @app.get("/books/list")
 @app.get("/books/list/")
 @app.get("/bookshelf")
-@app.get("/books")   # convenient alias for shelf in UI
+@app.get("/books")
 def list_books_top_level():
     return _scan_books()
 
-# --------- Reindex: create book.json for legacy folders ----------
 class ReindexResult(BaseModel):
     created: int
     updated_ids: List[str]
@@ -215,10 +213,8 @@ def reindex_legacy_to_json():
         if not legacy:
             continue
 
-        # Build a lightweight book.json from legacy images so it appears in shelf and viewer
         imgs = _list_images(sub)
         pages = []
-        # Prefer grouping by chapter (chXX_imgY). Fallback to page_XX; otherwise 1 image per page.
         ch_groups: Dict[str, List[str]] = {}
         for f in imgs:
             m = LEGACY_CH_PAT.match(f.name)
