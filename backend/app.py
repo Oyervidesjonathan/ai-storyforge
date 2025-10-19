@@ -239,6 +239,14 @@ def root():
 def health():
     return {"ok": True, "ts": int(time.time())}
 
+# Add near the other book routes in backend/app.py
+
+@app.get("/books/list", tags=["Books"])
+@app.get("/books/list/", tags=["Books"])
+def list_books_tolerant():
+    return _scan_books()
+
+
 # ---- Stories ----
 @app.get("/stories", response_model=List[StoryItem], tags=["Stories"])
 def list_stories():
