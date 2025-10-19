@@ -6,6 +6,10 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field, constr
 from openai import OpenAI
 
+# ----- NEW: formatter deps -----
+from jinja2 import Template
+from weasyprint import HTML
+
 # -------- OpenAI config --------
 OPENAI_API_KEY     = os.getenv("OPENAI_API_KEY", "")
 OPENAI_ORG_ID      = os.getenv("OPENAI_ORG_ID", "")
@@ -99,6 +103,61 @@ class BookListItem(BaseModel):
     cover_url: Optional[str] = None
     created_at: Optional[int] = None
     pages: int
+
+# ----- NEW: formatter options -----
+class FormatOpts(BaseModel):
+    trim: str = "8.5x8.5"      # "8x10", "7x10" also supported
+    bleed: bool = False        # adds 0.125" each side
+    font: str = "Literata"
+    line_height: float = 1.6
+    bg_style: str = "blur"     # "blur" or "tint"
+
+TRIMS: Dict[str, Tuple[float, float]] = {
+    "8.5x8.5": (8.5, 8.5),
+    "8x10":    (8.0, 10.0),
+    "7x10":    (7.0, 10.0),
+}
+
+TEMPLATE_HTML = Template(r"""
+<!doctype html>
+<html><head>
+  <meta charset="utf-8">
+  <style>
+    @page { size: {{ page_w_in }}in {{ page_h_in }}in; margin: 0; }
+    :root{
+      --safe: 0.375in;
+      --lh: {{ line_height }};
+      --font: '{{ font }}', Georgia, serif;
+    }
+    body{ margin:0; font-family: var(--font); }
+    .page{ position:relative; width:{{ page_w_in }}in; height:{{ page_h_in }}in; display:grid; grid-template-columns:1fr 1fr; }
+    .bg{ position:absolute; inset:0; background-size:cover; background-position:center;
+         {% if bg_style=='blur' %}filter: blur(18px) brightness(1.05) saturate(1.05); transform: scale(1.08);{% endif %} }
+    .tint{ position:absolute; inset:0; background: {% if bg_style=='tint' %}#fbf6ef{% else %}transparent{% endif %}; opacity:.9; }
+    .textbox{ position:relative; padding: var(--safe); }
+    .box{ background: rgba(255,255,255,.88); padding:.5in; border-radius:.1in; line-height:var(--lh); font-size:12.5pt; }
+    .art{ display:flex; align-items:center; justify-content:center; }
+    .art img{ max-width:100%; max-height:100%; }
+    .spacer{ page-break-after: always; }
+  </style>
+</head>
+<body>
+  {% for ch in chapters %}
+    <section class="page">
+      {% if ch.hero_rel %}
+        <div class="bg" style="background-image:url('{{ ch.hero_rel | e }}');"></div>
+      {% endif %}
+      <div class="tint"></div>
+      <div class="textbox"><div class="box">{{ ch.text | replace('\n','<br>') | safe }}</div></div>
+      <div class="art">
+        {% if ch.hero_rel %}<img src="{{ ch.hero_rel | e }}">{% endif %}
+      </div>
+    </section>
+    <div class="spacer"></div>
+  {% endfor %}
+</body>
+</html>
+""")
 
 # --------- helpers ---------
 def _title_from_prompt(prompt: str, age: str) -> str:
@@ -349,7 +408,7 @@ def debug_read_media(path: str = Query(..., description="Path relative to /media
         raise HTTPException(status_code=404, detail="not found")
     return {"root": str(DATA_ROOT), "path": path, "exists": True, "bytes": target.stat().st_size}
 
-# ========= INLINE EDIT APIS (text + image) =========
+# ========= INLINE EDIT + CHAPTER APIS =========
 
 def _book_dir(book_id: str) -> Path:
     return BOOKS_DIR / book_id
@@ -368,7 +427,8 @@ def _load_book_json(book_id: str) -> dict:
 
 def _save_book_json(book_id: str, data: dict) -> None:
     jf = _book_json_path(book_id)
-    jf.parent.mkdir(parents=True, exist_ok=True)
+    jf.parent.mkdir(parents=True, exist_ok=True
+    )
     jf.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 def _media_url_to_abs(media_url: str) -> Path:
@@ -376,6 +436,14 @@ def _media_url_to_abs(media_url: str) -> Path:
         raise HTTPException(status_code=400, detail="expected a /media/... url")
     rel = media_url[len("/media/"):]  # e.g. 'books/<id>/ch01_img1.png'
     return DATA_ROOT / rel
+
+def _media_url_to_rel(media_url: str) -> str:
+    """Return a filesystem-relative path under DATA_ROOT for WeasyPrint (e.g., 'books/<id>/ch01_img1.png')."""
+    if not media_url:
+        return ""
+    if not media_url.startswith("/media/"):
+        raise HTTPException(status_code=400, detail="expected a /media/... url")
+    return media_url[len("/media/"):]
 
 class ChapterTextPatch(BaseModel):
     chapter_index: int
@@ -386,6 +454,7 @@ class ImageEditReq(BaseModel):
     image_index: int
     prompt: str
 
+# ---- inline text edit ----
 @router.put("/books/{book_id}/edit-text", tags=["Books"])
 def edit_book_text(book_id: str, patch: ChapterTextPatch):
     meta = _load_book_json(book_id)
@@ -397,6 +466,7 @@ def edit_book_text(book_id: str, patch: ChapterTextPatch):
     _save_book_json(book_id, meta)
     return {"ok": True, "book_id": book_id, "chapter_index": patch.chapter_index}
 
+# ---- inline image edit ----
 @router.post("/books/{book_id}/edit-image", tags=["Books"])
 def edit_book_image(book_id: str, req: ImageEditReq):
     meta = _load_book_json(book_id)
@@ -424,77 +494,63 @@ def edit_book_image(book_id: str, req: ImageEditReq):
     return {"ok": True, "book_id": book_id, "chapter_index": req.chapter_index,
             "image_index": req.image_index, "url": current_url}
 
-    # === BEGIN: fallback edit endpoints (direct on app) ===
-from pydantic import BaseModel
-from fastapi import HTTPException
-from pathlib import Path
-import json, time, uuid, os
+# ---- NEW: chapter read/update (for the Pro Editor UI) ----
+@router.get("/books/{book_id}/chapter/{n}", tags=["Books"])
+def get_chapter(book_id: str, n: int):
+    meta = _load_book_json(book_id)
+    pages = meta.get("pages", [])
+    idx = n - 1
+    if idx < 0 or idx >= len(pages):
+        raise HTTPException(status_code=404, detail="chapter not found")
+    page = pages[idx]
+    return {"text": page.get("text", ""), "images": page.get("image_urls", [])}
 
-from .routers.books import DATA_ROOT, BOOKS_DIR, _gen_image_to_file  # reuse helpers
+@router.put("/books/{book_id}/chapter/{n}", tags=["Books"])
+def put_chapter(book_id: str, n: int, patch: ChapterTextPatch):
+    meta = _load_book_json(book_id)
+    pages = meta.get("pages", [])
+    idx = n - 1
+    if idx < 0 or idx >= len(pages):
+        raise HTTPException(status_code=404, detail="chapter not found")
+    pages[idx]["text"] = patch.markdown
+    meta["last_modified"] = int(time.time())
+    _save_book_json(book_id, meta)
+    return {"ok": True, "book_id": book_id, "chapter_index": idx}
 
-class ChapterTextPatch(BaseModel):
-    chapter_index: int
-    markdown: str
-
-class ImageEditReq(BaseModel):
-    chapter_index: int
-    image_index: int
-    prompt: str
-
-def _book_json_path(book_id: str) -> Path:
-    return (BOOKS_DIR / book_id) / "book.json"
-
-def _load_book_json(book_id: str) -> dict:
+# ---- NEW: KDP PDF formatter ----
+@router.post("/books/{book_id}/format", tags=["Books"])
+def format_book(book_id: str, opts: FormatOpts):
     jf = _book_json_path(book_id)
     if not jf.exists():
-        raise HTTPException(status_code=404, detail="book.json not found")
-    return json.loads(jf.read_text(encoding="utf-8"))
+        raise HTTPException(status_code=404, detail="Book not found")
+    book = json.loads(jf.read_text(encoding="utf-8"))
 
-def _save_book_json(book_id: str, data: dict) -> None:
-    jf = _book_json_path(book_id)
-    jf.parent.mkdir(parents=True, exist_ok=True)
-    jf.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    trim_w_in, trim_h_in = TRIMS.get(opts.trim, TRIMS["8.5x8.5"])
+    bleed_in = 0.125 if opts.bleed else 0.0
+    page_w_in = trim_w_in + (bleed_in * 2)
+    page_h_in = trim_h_in + (bleed_in * 2)
 
-def _media_url_to_abs(media_url: str) -> Path:
-    if not media_url.startswith("/media/"):
-        raise HTTPException(status_code=400, detail="expected a /media/... url")
-    rel = media_url[len("/media/"):]
-    return DATA_ROOT / rel
+    chapters = []
+    for p in book.get("pages", []):
+        hero = (p.get("image_urls") or [None])[0]
+        hero_rel = _media_url_to_rel(hero) if hero else ""
+        chapters.append({"text": p.get("text", ""), "hero_rel": hero_rel})
 
-@app.put("/books/{book_id}/edit-text", tags=["Books"])
-def _edit_book_text(book_id: str, patch: ChapterTextPatch):
-    meta = _load_book_json(book_id)
-    pages = meta.get("pages", [])
-    if patch.chapter_index < 0 or patch.chapter_index >= len(pages):
-        raise HTTPException(status_code=400, detail="invalid chapter index")
-    pages[patch.chapter_index]["text"] = patch.markdown
-    meta["last_modified"] = int(time.time())
-    _save_book_json(book_id, meta)
-    return {"ok": True, "book_id": book_id, "chapter_index": patch.chapter_index}
+    html = TEMPLATE_HTML.render(
+        chapters=chapters,
+        page_w_in=page_w_in, page_h_in=page_h_in,
+        line_height=opts.line_height,
+        font=opts.font,
+        bg_style=opts.bg_style,
+    )
 
-@app.post("/books/{book_id}/edit-image", tags=["Books"])
-def _edit_book_image(book_id: str, req: ImageEditReq):
-    meta = _load_book_json(book_id)
-    pages = meta.get("pages", [])
-    if req.chapter_index < 0 or req.chapter_index >= len(pages):
-        raise HTTPException(status_code=400, detail="invalid chapter index")
-    page = pages[req.chapter_index]
-    img_urls = page.get("image_urls", [])
-    if req.image_index < 0 or req.image_index >= len(img_urls):
-        raise HTTPException(status_code=400, detail="invalid image index")
+    out_dir = BOOKS_DIR / book_id / "exports"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    safe_title = (book.get("title") or "book").replace("/", "_").replace("\\", "_")
+    out_pdf = out_dir / f"{safe_title.replace(' ', '_')}_kdp.pdf"
 
-    current_url = img_urls[req.image_index]
-    abs_path = _media_url_to_abs(current_url)
-    abs_path.parent.mkdir(parents=True, exist_ok=True)
+    # base_url lets WeasyPrint resolve relative file paths like 'books/<id>/ch01_img1.png'
+    HTML(string=html, base_url=str(DATA_ROOT.resolve())).write_pdf(str(out_pdf))
 
-    tmp_stem = abs_path.parent / f"_tmp_{uuid.uuid4().hex}"
-    out_tmp = _gen_image_to_file(req.prompt.strip(), "square", tmp_stem)
-    os.replace(out_tmp, abs_path)
-
-    meta["last_modified"] = int(time.time())
-    page.setdefault("image_edits", {})
-    page["image_edits"][str(req.image_index)] = {"last_prompt": req.prompt, "ts": meta["last_modified"]}
-    _save_book_json(book_id, meta)
-    return {"ok": True, "book_id": book_id, "chapter_index": req.chapter_index, "image_index": req.image_index, "url": current_url}
-# === END: fallback edit endpoints ===
-
+    rel = out_pdf.relative_to(DATA_ROOT).as_posix()
+    return {"pdf_url": f"/media/{rel}"}
