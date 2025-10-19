@@ -1,0 +1,23 @@
+[phases.setup]
+# Native packages WeasyPrint needs
+aptPkgs = [
+  "libcairo2",
+  "libpango-1.0-0",
+  "libpangoft2-1.0-0",
+  "libgdk-pixbuf-2.0-0",
+  "libffi-dev",
+  "libxml2",
+  "libxslt1.1",
+  "fonts-dejavu-core",
+  "fonts-liberation"
+]
+
+[phases.install]
+cmds = ["pip install --no-cache-dir -r requirements.txt"]
+
+[phases.build]
+# no-op; keep for clarity
+cmds = []
+
+[start]
+cmd = "uvicorn backend.app.main:app --host 0.0.0.0 --port ${PORT:-8000}"
