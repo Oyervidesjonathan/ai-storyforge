@@ -45,7 +45,8 @@ if not frontend_dir.exists():
     print(f"⚠️ frontend dir not found at {frontend_dir}")
 
 # Serve your static frontend assets (index.html, editor_pro.html, etc.)
-app.mount("/static", StaticFiles(directory=str(frontend_dir)), name="static")
+# html=True lets /static/ render index.html automatically if requested directly.
+app.mount("/static", StaticFiles(directory=str(frontend_dir), html=True), name="static")
 
 # Serve generated images and exported PDFs
 app.mount("/media", StaticFiles(directory=str(DATA_ROOT)), name="media")
@@ -65,13 +66,14 @@ def health():
 def ui():
     return FileResponse(str(frontend_dir / "index.html"))
 
-# New Pro Editor UI (served directly)
+# New Pro Editor UI (served directly). Falls back to /ui if missing.
 @app.get("/editor")
 def editor_pro():
     p = frontend_dir / "editor_pro.html"
-    if not p.exists():
-        raise HTTPException(status_code=404, detail="editor_pro.html not found in /frontend")
-    return FileResponse(str(p))
+    if p.exists():
+        return FileResponse(str(p))
+    # graceful fallback if the pro editor file isn't present
+    return FileResponse(str(frontend_dir / "index.html"))
 
 # ---------- Include feature router that creates/edits/books + formatter ----------
 from .routers.books import router as books_router
