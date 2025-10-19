@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field, constr
 from openai import OpenAI
 
 SERVICE_NAME = "AI StoryForge"
-APP_VERSION  = "0.4.1"  # +books/list
+APP_VERSION  = "0.4.2"  # adds /books/list + aliases and route logging
 
 # ---------- OpenAI client ----------
 OPENAI_API_KEY     = os.getenv("OPENAI_API_KEY", "")
@@ -300,7 +300,7 @@ def generate_image(req: ImageRequest):
     rel = Path(abs_path).relative_to(DATA_ROOT)
     return ImageResponse(image_url=f"/media/{rel.as_posix()}")
 
-# ---- Books (LEGACY, one image per chapter) ----
+# ---- Books (legacy: one image/chapter) ----
 @app.post("/books", response_model=BookResponse, tags=["Books"])
 def generate_book(req: BookRequest):
     story = generate_story(req.story)
@@ -320,10 +320,10 @@ def generate_book(req: BookRequest):
         final_id = str(uuid.uuid4())
     return BookResponse(id=final_id, title=story.title, chapters=story.chapters, image_urls=urls)
 
-# ---- NEW: Compose multi-image book & save book.json ----
+# ---- Compose multi-image book & save book.json ----
 @app.post("/books/compose", response_model=BookComposeResponse, tags=["Books"])
 def compose_book(req: BookComposeRequest):
-    s = generate_story(req.story)  # generates & persists the story
+    s = generate_story(req.story)
     book_id = str(uuid.uuid4())
     book_dir = DATA_ROOT / "books" / book_id
     book_dir.mkdir(parents=True, exist_ok=True)
@@ -377,8 +377,7 @@ class BookListItem(BaseModel):
     created_at: Optional[int] = None
     pages: int
 
-@app.get("/books/list", response_model=List[BookListItem], tags=["Books"])
-def list_books():
+def _scan_books() -> List[BookListItem]:
     books_dir = DATA_ROOT / "books"
     if not books_dir.exists():
         return []
@@ -402,6 +401,18 @@ def list_books():
             continue
     items.sort(key=lambda x: x.created_at or 0, reverse=True)
     return items
+
+@app.get("/books/list", response_model=List[BookListItem], tags=["Books"])
+def list_books_alias_1():
+    return _scan_books()
+
+@app.get("/books", response_model=List[BookListItem], tags=["Books"])
+def list_books_alias_2():
+    return _scan_books()
+
+@app.get("/bookshelf", response_model=List[BookListItem], tags=["Books"])
+def list_books_alias_3():
+    return _scan_books()
 
 # ---- Debug helpers ----
 @app.get("/debug/media")
@@ -429,3 +440,12 @@ def debug_read_media(path: str = Query(..., description="Path relative to /media
     if not target.exists():
         raise HTTPException(status_code=404, detail="not found")
     return {"root": str(DATA_ROOT), "path": path, "exists": True, "bytes": target.stat().st_size}
+
+# ---- Route list on startup ----
+@app.on_event("startup")
+def _log_routes():
+    paths = sorted({getattr(r, 'path', '') for r in app.routes})
+    print("📚 Registered routes:")
+    for p in paths:
+        if p:
+            print("  •", p)
