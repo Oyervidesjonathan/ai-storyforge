@@ -1,420 +1,353 @@
-# backend/app.py
-import os, time, uuid, json, base64
-from typing import List, Optional, Dict, Tuple
-from pathlib import Path
-
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-
-from pydantic import BaseModel, Field, constr
-from openai import OpenAI
-
-SERVICE_NAME = "AI StoryForge"
-APP_VERSION  = "0.4.0"
-
-# ---------- OpenAI client ----------
-OPENAI_API_KEY     = os.getenv("OPENAI_API_KEY", "")
-OPENAI_ORG_ID      = os.getenv("OPENAI_ORG_ID", "")
-OPENAI_TEXT_MODEL  = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-OPENAI_IMAGE_MODEL = os.getenv("IMAGE_MODEL", "gpt-image-1")  # returns b64_json
-
-client: Optional[OpenAI]
-if not OPENAI_API_KEY:
-    client = None
-else:
-    client = OpenAI(api_key=OPENAI_API_KEY, organization=(OPENAI_ORG_ID or None))
-
-# ---------- FastAPI ----------
-app = FastAPI(
-    title=SERVICE_NAME,
-    version=APP_VERSION,
-    description="Generate children's stories and illustrations.",
-)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], allow_methods=["*"], allow_headers=["*"], allow_credentials=True,
-)
-
-# ---------- Static mounts ----------
-frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
-app.mount("/static", StaticFiles(directory=frontend_dir), name="static")
-
-# Use mounted /data if present (MEDIA_ROOT=/data), else local ./data
-DEFAULT_MEDIA = Path(__file__).parent / "data"
-DATA_ROOT = Path(os.getenv("MEDIA_ROOT", "/data"))
-if not DATA_ROOT.exists():
-    DATA_ROOT = DEFAULT_MEDIA
-DATA_ROOT.mkdir(parents=True, exist_ok=True)
-
-print("📂 MEDIA ROOT =", str(DATA_ROOT.resolve()))
-print("📦 Exists?", DATA_ROOT.exists(), "Writable?", os.access(DATA_ROOT, os.W_OK))
-
-# Serve persisted files under /media
-app.mount("/media", StaticFiles(directory=DATA_ROOT), name="media")
-
-@app.get("/ui")
-def serve_frontend():
-    return FileResponse(os.path.join(frontend_dir, "index.html"))
-
-
-# ---------- Schemas ----------
-class StoryRequest(BaseModel):
-    prompt: constr(strip_whitespace=True, min_length=3)
-    age_range: constr(strip_whitespace=True) = Field("4-7")
-    style: constr(strip_whitespace=True) = Field("bedtime, friendly")
-    chapters: int = Field(1, ge=1, le=10)
-
-class StoryResponse(BaseModel):
-    title: str
-    chapters: List[str]
-
-class StoryItem(BaseModel):
-    id: str
-    title: str
-    chapters_count: int
-    created_at: int
-
-class ImageRequest(BaseModel):
-    prompt: constr(strip_whitespace=True, min_length=3)
-    aspect: constr(strip_whitespace=True) = Field("square", description="square|portrait|landscape")
-
-class ImageResponse(BaseModel):
-    image_url: str  # always a /media/... URL
-
-class BookRequest(BaseModel):
-    story: StoryRequest
-    images: bool = True
-
-class BookResponse(BaseModel):
-    id: str
-    title: str
-    chapters: List[str]
-    image_urls: Optional[List[str]] = None
-
-# NEW: compose-book request (1–3 images per chapter)
-class BookComposeRequest(BaseModel):
-    story: StoryRequest
-    images_per_chapter: int = Field(2, ge=1, le=3)
-
-# Book JSON returned to the viewer
-class BookPage(BaseModel):
-    chapter_index: int
-    text: str
-    image_urls: List[str]
-
-class BookJSON(BaseModel):
-    id: str
-    title: str
-    created_at: int
-    pages: List[BookPage]
-
-
-# ---------- Story Storage ----------
-STORIES: Dict[str, Dict] = {}
-STORIES_FILE = Path(__file__).parent / "stories.json"
-
-def save_stories():
-    try:
-        with open(STORIES_FILE, "w", encoding="utf-8") as f:
-            json.dump(STORIES, f, ensure_ascii=False, indent=2)
-        print(f"💾 Saved {len(STORIES)} stories")
-    except Exception as e:
-        print(f"⚠️ Failed to save stories: {e}")
-
-def load_stories():
-    global STORIES
-    try:
-        if STORIES_FILE.exists():
-            with open(STORIES_FILE, "r", encoding="utf-8") as f:
-                STORIES = json.load(f)
-            print(f"✅ Loaded {len(STORIES)} stories")
-        else:
-            STORIES = {}
-            print("🆕 No stories.json found. Starting fresh.")
-    except Exception as e:
-        print(f"⚠️ Failed to load stories: {e}")
-        STORIES = {}
-
-load_stories()
-
-
-# ---------- Helpers ----------
-def _title_from_prompt(prompt: str, age_range: str) -> str:
-    return f"{prompt.strip().capitalize()} (A {age_range} Story)"
-
-def _chapter_prompts(base_prompt: str, style: str, chapters: int) -> List[str]:
-    return [
-        f"Write Chapter {i+1} of a children's story.\n"
-        f"Base premise: {base_prompt}\n"
-        f"Style: {style}. Tone: wholesome, simple words.\n"
-        f"Length: 120-200 words. End with a gentle hook unless it’s final chapter."
-        for i in range(chapters)
-    ]
-
-def _image_prompt_from_chapter(title: str, chapter_text: str, style_hint: str, panel_note: str = "") -> str:
-    base = (
-        f"Children's book illustration for: '{title}'. "
-        f"Scene summary: {chapter_text[:240]}. "
-        f"Style: {style_hint}. Ultra kid-friendly, bright, cozy, no text overlay."
-    )
-    if panel_note:
-        base += f" {panel_note}"
-    return base
-
-# gpt-image-1 valid sizes only
-def _image_size(aspect: str) -> str:
-    a = (aspect or "square").lower()
-    if a.startswith("port"): return "1024x1536"
-    if a.startswith("land"): return "1536x1024"
-    return "1024x1024"
-
-def _image_size_px(aspect: str) -> Tuple[int, int]:
-    a = (aspect or "square").lower()
-    if a.startswith("port"): return (1024, 1536)
-    if a.startswith("land"): return (1536, 1024)
-    return (1024, 1024)
-
-def _placeholder_svg(title: str, w: int, h: int) -> str:
-    # Properly escaped SVG placeholder (this was broken)
-    t = (title or "StoryForge").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}">
-  <defs>
-    <linearGradient id="g" x1="0" x2="1" y1="0" y2="1">
-      <stop offset="0%" stop-color="#fde68a"/>
-      <stop offset="100%" stop-color="#fca5a5"/>
-    </linearGradient>
-  </defs>
-  <rect width="100%" height="100%" fill="url(#g)" rx="24" ry="24"/>
-  <text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle"
-        font-family="Arial, sans-serif" font-size="{int(min(w,h)*0.08)}" fill="#1f2937">
-    {t[:50]}
-  </text>
-  <text x="50%" y="62%" dominant-baseline="middle" text-anchor="middle"
-        font-family="Arial, sans-serif" font-size="{int(min(w,h)*0.04)}" fill="#374151">
-    (placeholder illustration)
-  </text>
-</svg>"""
-
-def _gen_image_to_file(prompt: str, aspect: str, dest_stem: Path) -> Path:
-    """
-    Generate PNG via gpt-image-1 (returns b64_json by default).
-    On any error or if the model isn't available, fall back to an SVG placeholder.
-    """
-    w, h = _image_size_px(aspect)
-    dest_stem.parent.mkdir(parents=True, exist_ok=True)
-
-    try:
-        if client is None or not OPENAI_IMAGE_MODEL:
-            raise RuntimeError("Images API not configured")
-
-        resp = client.images.generate(
-            model=OPENAI_IMAGE_MODEL,
-            prompt=prompt,
-            size=_image_size(aspect),   # 1024x1024 | 1024x1536 | 1536x1024
-            quality="high",
-        )
-        datum = resp.data[0] if getattr(resp, "data", None) else None
-        b64 = getattr(datum, "b64_json", None)
-        if not isinstance(b64, str) or not b64.strip():
-            raise ValueError("No b64_json in image response")
-
-        out = dest_stem.with_suffix(".png")
-        with open(out, "wb") as f:
-            f.write(base64.b64decode(b64))
-        return out
-
-    except Exception as e:
-        print(f"⚠️ Image API failed, using placeholder: {e}")
-        out = dest_stem.with_suffix(".svg")
-        out.write_text(_placeholder_svg(prompt, w, h), encoding="utf-8")
-        return out
-
-def _require_client():
-    if client is None:
-        raise HTTPException(status_code=500, detail="OPENAI_API_KEY is not configured in Railway Variables.")
-
-
-# ---------- Routes ----------
-@app.get("/", tags=["Root"])
-def root():
-    return {"service": SERVICE_NAME, "docs": "/docs", "health": "/health"}
-
-@app.get("/health", tags=["Root"])
-def health():
-    return {"ok": True, "ts": int(time.time())}
-
-# ---- Stories ----
-@app.get("/stories", response_model=List[StoryItem], tags=["Stories"])
-def list_stories():
-    items: List[StoryItem] = []
-    for i, data in STORIES.items():
-        items.append(StoryItem(
-            id=i,
-            title=data["title"],
-            chapters_count=len(data["chapters"]),
-            created_at=data["created_at"],
-        ))
-    items.sort(key=lambda x: x.created_at, reverse=True)
-    return items
-
-@app.get("/stories/{story_id}", response_model=StoryResponse, tags=["Stories"])
-def get_story(story_id: str):
-    data = STORIES.get(story_id)
-    if not data:
-        raise HTTPException(status_code=404, detail="Not found")
-    return StoryResponse(title=data["title"], chapters=data["chapters"])
-
-@app.post("/stories", response_model=StoryResponse, tags=["Stories"])
-def generate_story(req: StoryRequest):
-    _require_client()
-
-    title = _title_from_prompt(req.prompt, req.age_range)
-    chapter_prompts = _chapter_prompts(req.prompt, req.style, req.chapters)
-
-    chapters: List[str] = []
-    try:
-        for cp in chapter_prompts:
-            resp = client.chat.completions.create(
-                model=OPENAI_TEXT_MODEL,
-                temperature=0.9,
-                messages=[
-                    {"role": "system", "content":
-                        "You are a children’s author. Write warm, age-appropriate prose. "
-                        "Avoid scary content, complex vocabulary, and brand names."
-                    },
-                    {"role": "user", "content": cp},
-                ],
-            )
-            text = (resp.choices[0].message.content or "").strip()
-            chapters.append(text if text else "…")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"LLM error: {e}")
-
-    story_id = str(uuid.uuid4())
-    STORIES[story_id] = {"title": title, "chapters": chapters, "created_at": int(time.time())}
-    save_stories()
-    return StoryResponse(title=title, chapters=chapters)
-
-@app.delete("/stories/{story_id}", tags=["Stories"])
-def delete_story(story_id: str):
-    if story_id not in STORIES:
-        raise HTTPException(status_code=404, detail="Story not found")
-    del STORIES[story_id]
-    save_stories()
-    return {"ok": True, "deleted_id": story_id}
-
-# ---- Images ----
-@app.post("/images", response_model=ImageResponse, tags=["Images"])
-def generate_image(req: ImageRequest):
-    tmp_dir = DATA_ROOT / "tmp"
-    dest_stem = tmp_dir / str(uuid.uuid4())
-    abs_path = _gen_image_to_file(req.prompt.strip(), req.aspect, dest_stem)
-    rel = Path(abs_path).relative_to(DATA_ROOT)
-    return ImageResponse(image_url=f"/media/{rel.as_posix()}")
-
-# ---- Books (legacy combined) ----
-@app.post("/books", response_model=BookResponse, tags=["Books"])
-def generate_book(req: BookRequest):
-    story = generate_story(req.story)
-    urls: Optional[List[str]] = None
-
-    if req.images:
-        book_id = str(uuid.uuid4())
-        book_dir = DATA_ROOT / "books" / book_id
-        urls = []
-        for idx, ch in enumerate(story.chapters, start=1):
-            iprompt = _image_prompt_from_chapter(story.title, ch, req.story.style)
-            dest_stem = book_dir / f"page_{idx:02d}"
-            abs_path = _gen_image_to_file(iprompt, "square", dest_stem)
-            rel = Path(abs_path).relative_to(DATA_ROOT)
-            urls.append(f"/media/{rel.as_posix()}")
-        final_id = book_id
-    else:
-        final_id = str(uuid.uuid4())
-
-    return BookResponse(id=final_id, title=story.title, chapters=story.chapters, image_urls=urls)
-
-# ---- Books (compose for viewer with 1–3 images per chapter) ----
-@app.post("/books/compose", response_model=BookJSON, tags=["Books"])
-def compose_book(req: BookComposeRequest):
-    """
-    Creates a story and N images per chapter, returns JSON with pages for the flip viewer.
-    Persists everything under /media/books/<book_id>/ (including book.json).
-    """
-    story_resp = generate_story(req.story)
-
-    book_id = str(uuid.uuid4())
-    book_dir = DATA_ROOT / "books" / book_id
-    book_dir.mkdir(parents=True, exist_ok=True)
-
-    pages: List[BookPage] = []
-    for ci, chapter_text in enumerate(story_resp.chapters, start=1):
-        img_urls: List[str] = []
-        for pi in range(1, req.images_per_chapter + 1):
-            panel_note = f"Panel {pi} of {req.images_per_chapter}."
-            iprompt = _image_prompt_from_chapter(story_resp.title, chapter_text, req.story.style, panel_note=panel_note)
-            dest_stem = book_dir / f"page_{ci:02d}_{pi}"
-            abs_path = _gen_image_to_file(iprompt, "square", dest_stem)
-            rel = Path(abs_path).relative_to(DATA_ROOT)
-            img_urls.append(f"/media/{rel.as_posix()}")
-
-        pages.append(BookPage(
-            chapter_index=ci-1,
-            text=chapter_text,
-            image_urls=img_urls
-        ))
-
-    book_json = BookJSON(
-        id=book_id,
-        title=story_resp.title,
-        created_at=int(time.time()),
-        pages=pages
-    )
-
-    with open(book_dir / "book.json", "w", encoding="utf-8") as f:
-        f.write(book_json.model_dump_json(indent=2))
-
-    return book_json
-
-@app.get("/books/{book_id}", response_model=BookJSON, tags=["Books"])
-def get_book(book_id: str):
-    book_file = DATA_ROOT / "books" / book_id / "book.json"
-    if not book_file.exists():
-        raise HTTPException(status_code=404, detail="book not found")
-    try:
-        data = json.loads(book_file.read_text(encoding="utf-8"))
-        return BookJSON(**data)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"failed to read book.json: {e}")
-
-# ---- Debug helpers ----
-@app.get("/debug/media")
-def debug_media():
-    """List files under DATA_ROOT and show the active media root."""
-    items = []
-    for p in DATA_ROOT.rglob("*"):
-        if p.is_file():
-            rel = p.relative_to(DATA_ROOT).as_posix()
-            items.append({"url": f"/media/{rel}", "bytes": p.stat().st_size})
-
-    def _mtime_safe(p):
-        try:
-            return p.stat().st_mtime
-        except Exception:
-            return 0
-
-    items.sort(key=lambda x: _mtime_safe(DATA_ROOT / x["url"].replace("/media/", "")), reverse=True)
-    return {"root": str(DATA_ROOT), "count": len(items), "items": items[:200]}
-
-@app.get("/debug/read")
-def debug_read_media(path: str = Query(..., description="Path relative to /media, e.g. tmp/abc.png or books/<id>/page_01_1.png")):
-    """Confirm a specific file exists under DATA_ROOT."""
-    p = Path(path)
-    if p.is_absolute() or ".." in p.parts:
-        raise HTTPException(status_code=400, detail="bad path")
-    target = DATA_ROOT / p
-    if not target.exists():
-        raise HTTPException(status_code=404, detail="not found")
-    return {"root": str(DATA_ROOT), "path": path, "exists": True, "bytes": target.stat().st_size}
+do it for me <!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>AI StoryForge 📖</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    body { font-family: Arial, sans-serif; background: #faf6f2; color: #333; padding: 20px; }
+    h1 { text-align: center; }
+
+    /* ===== Stories styles (unchanged) ===== */
+    .story-list { display: flex; flex-direction: column; gap: 10px; margin-top: 20px; }
+    .story-card { padding: 12px; background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); cursor: pointer; position: relative; }
+    .story-card:hover { background: #f1ece7; }
+    .story-title { font-size: 1.2em; margin-bottom: 4px; }
+    .story-meta { font-size: 0.9em; color: #666; }
+    .story-view { margin-top: 20px; padding: 20px; background: #fff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+    .back-btn { margin-top: 15px; background: #333; color: white; padding: 8px 12px; border: none; border-radius: 6px; cursor: pointer; }
+    .back-btn:hover { background: #555; }
+    .delete-btn { position: absolute; top: 10px; right: 10px; background: none; border: none; cursor: pointer; font-size: 1.2em; }
+    .delete-btn:hover { color: red; }
+    .create-form { background: #fff; padding: 20px; margin-top: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+    .create-form input, .create-form textarea { width: 100%; margin: 5px 0; padding: 8px; font-size: 1em; }
+    .create-form button { margin-top: 10px; background: #333; color: white; padding: 8px 12px; border: none; border-radius: 6px; cursor: pointer; }
+    .create-form button:hover { background: #555; }
+
+    /* ===== Cards + media ===== */
+    .card { background:#fff; padding:20px; margin-top:20px; border-radius:8px; box-shadow:0 2px 4px rgba(0,0,0,0.1); }
+    .muted { color:#666; font-size: 0.9em; }
+    .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap:12px; margin-top: 10px; }
+    .thumb { border:1px solid #eee; border-radius:8px; overflow:hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.08); background:#fff; }
+    .thumb img { display:block; width:100%; height:auto; }
+    .hr { height:1px; background:#eee; margin:16px 0; }
+    .empty { color:#666; text-align:center; padding:18px 8px; }
+
+    /* ===== Book builder form ===== */
+    .book-form{
+      display:grid;
+      grid-template-columns: 1.6fr 0.8fr 1fr 120px 160px; /* prompt | age | style | chapters | images/ch */
+      gap:12px 16px;
+      align-items:end;
+      margin-top:10px;
+    }
+    .book-form .field label{ display:block; font-weight:600; margin-bottom:4px; }
+    .book-form textarea,.book-form input,.book-form select{
+      width:100%; box-sizing:border-box; font-size:1em; padding:8px;
+    }
+    #b-prompt{ min-height:56px; resize:vertical; }
+    .book-actions{ grid-column:1 / -1; display:flex; align-items:center; gap:12px; margin-top:6px; }
+    @media (max-width: 960px){ .book-form{ grid-template-columns: 1fr; } }
+
+    /* ===== Flip viewer ===== */
+    .viewer { margin-top:16px; }
+    .spread {
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap:16px;
+      min-height: 480px;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.08);
+      background:#fff;
+    }
+    .left-page {
+      position: relative;
+      padding: 20px;
+      display:flex;
+      align-items:flex-start;
+      justify-content:flex-start;
+      overflow:hidden;
+    }
+    .left-bg {
+      position:absolute; inset:0;
+      background-size:cover; background-position:center;
+      filter: blur(12px) brightness(1.05);
+      transform: scale(1.1);
+      opacity: 0.35;
+    }
+    .left-overlay { position:absolute; inset:0; background:linear-gradient(90deg, rgba(255,255,255,0.9), rgba(255,255,255,0.6)); }
+    .left-content { position:relative; z-index:2; max-width: 90%; line-height:1.6; }
+    .right-page {
+      display:flex; align-items:center; justify-content:center;
+      background: #fafafa;
+    }
+    .right-page img { width:100%; height:auto; object-fit:contain; }
+    .viewer-toolbar{
+      margin-top:10px; display:flex; align-items:center; justify-content:space-between; gap:12px;
+    }
+    .viewer-toolbar .btn{
+      background:#333; color:#fff; border:none; border-radius:8px; padding:8px 12px; cursor:pointer;
+    }
+    .viewer-toolbar .btn:disabled{ opacity:0.5; cursor:not-allowed; }
+    .viewer-meta{ color:#555; font-size:.95em; }
+  </style>
+</head>
+<body>
+  <h1>📚 AI StoryForge</h1>
+
+  <!-- Stories (unchanged) -->
+  <div class="create-form">
+    <h2>Create a New Story</h2>
+    <label>Prompt:</label>
+    <textarea id="new-prompt" placeholder="e.g. A shy dragon who learns to fly"></textarea>
+    <label>Age Range:</label>
+    <input id="new-age" type="text" value="4-7">
+    <label>Style:</label>
+    <input id="new-style" type="text" value="bedtime, friendly">
+    <label>Chapters:</label>
+    <input id="new-chapters" type="number" value="1" min="1" max="10">
+    <button onclick="createStory()">➕ Generate Story</button>
+  </div>
+
+  <div id="story-list" class="story-list"></div>
+  <div id="story-view" class="story-view" style="display:none;"></div>
+
+  <!-- Book Builder -->
+  <div class="card" id="book-card">
+    <h2>Create an Illustrated Book</h2>
+    <p class="muted">Each chapter gets 1–3 images. We’ll lay it out as a two-page spread (left text, right image) you can flip through.</p>
+
+    <div class="book-form">
+      <div class="field" style="grid-column:auto;">
+        <label for="b-prompt">Prompt</label>
+        <textarea id="b-prompt" placeholder="A friendly dragon under a starry sky, picture-book style"></textarea>
+      </div>
+      <div class="field">
+        <label for="b-age">Age range</label>
+        <input id="b-age" type="text" value="4-7" />
+      </div>
+      <div class="field">
+        <label for="b-style">Style (text & images)</label>
+        <input id="b-style" type="text" value="bedtime, watercolor, cozy, no text on image" />
+      </div>
+      <div class="field">
+        <label for="b-chapters">Chapters</label>
+        <input id="b-chapters" type="number" min="1" max="10" value="3" />
+      </div>
+      <div class="field">
+        <label for="b-ipc">Images per chapter</label>
+        <select id="b-ipc">
+          <option value="1">1</option>
+          <option value="2" selected>2</option>
+          <option value="3">3</option>
+        </select>
+      </div>
+      <div class="book-actions">
+        <button id="btn-book">🎨 Generate Book</button>
+        <span id="b-status" class="muted"></span>
+      </div>
+    </div>
+
+    <!-- Live Book Viewer -->
+    <div id="book-viewer" class="viewer" style="display:none;">
+      <div class="spread">
+        <div class="left-page">
+          <div id="left-bg" class="left-bg"></div>
+          <div class="left-overlay"></div>
+          <div id="left-text" class="left-content"></div>
+        </div>
+        <div class="right-page">
+          <img id="right-img" alt="Page illustration"/>
+        </div>
+      </div>
+      <div class="viewer-toolbar">
+        <div>
+          <button id="prev" class="btn">⬅ Prev</button>
+          <button id="next" class="btn">Next ➡</button>
+        </div>
+        <div class="viewer-meta">
+          <span id="page-indicator">Page 1</span>
+          <span id="book-title" style="margin-left:10px;"></span>
+        </div>
+        <div>
+          <button id="open-json" class="btn">Open JSON</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="book-out" style="margin-top:14px;"></div>
+  </div>
+
+  <!-- Media Gallery -->
+  <div class="card" id="media-card">
+    <h2>Media Gallery</h2>
+    <p class="muted">From <code>/debug/media</code>. Click any thumbnail to open via <code>/media/…</code>.</p>
+    <button id="btn-media-refresh">🔄 Refresh</button>
+    <div id="media-list" class="grid"></div>
+    <div id="media-empty" class="empty" style="display:none;">No media yet.</div>
+  </div>
+
+  <script>
+    const API_BASE = window.location.origin;
+
+    /* ===== Stories (unchanged) ===== */
+    async function loadStories() {
+      const res = await fetch(`${API_BASE}/stories`);
+      const stories = await res.json();
+      const list = document.getElementById('story-list');
+      list.innerHTML = '';
+      if (stories.length === 0) {
+        list.innerHTML = '<p>No stories yet. Create one above 👆</p>';
+        return;
+      }
+      stories.forEach(story => {
+        const card = document.createElement('div'); card.className = 'story-card';
+        const del = document.createElement('button'); del.textContent='🗑️'; del.className='delete-btn';
+        del.onclick = async (e) => {
+          e.stopPropagation();
+          if (confirm(`Delete "${story.title}"?`)) {
+            const r = await fetch(`${API_BASE}/stories/${story.id}`, { method: 'DELETE' });
+            if (r.ok) loadStories(); else alert('Failed to delete story.');
+          }
+        };
+        const title = document.createElement('div'); title.className='story-title'; title.textContent = story.title;
+        const meta = document.createElement('div'); meta.className='story-meta'; meta.textContent = `${story.chapters_count} chapter(s)`;
+        card.append(del, title, meta);
+        card.onclick = () => viewStory(story.id);
+        list.appendChild(card);
+      });
+    }
+
+    async function viewStory(id) {
+      const res = await fetch(`${API_BASE}/stories/${id}`);
+      const story = await res.json();
+      const view = document.getElementById('story-view');
+      view.style.display = 'block';
+      view.innerHTML = `
+        <h2>${story.title}</h2>
+        ${story.chapters.map((c, i) => `<h3>Chapter ${i+1}</h3><p>${c}</p>`).join('')}
+        <button class="back-btn" onclick="backToList()">⬅ Back</button>
+      `;
+      document.getElementById('story-list').style.display = 'none';
+      document.querySelector('.create-form').style.display = 'none';
+    }
+
+    function backToList() {
+      document.getElementById('story-list').style.display = 'flex';
+      document.getElementById('story-view').style.display = 'none';
+      document.querySelector('.create-form').style.display = 'block';
+    }
+
+    async function createStory() {
+      const prompt = document.getElementById('new-prompt').value.trim();
+      const age = document.getElementById('new-age').value.trim();
+      const style = document.getElementById('new-style').value.trim();
+      const chapters = parseInt(document.getElementById('new-chapters').value);
+      if (!prompt) { alert('Please enter a prompt.'); return; }
+      const payload = { prompt, age_range: age, style, chapters };
+      const res = await fetch(`${API_BASE}/stories`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+      });
+      if (res.ok) { await loadStories(); document.getElementById('new-prompt').value = ''; }
+      else { alert('Failed to generate story.'); }
+    }
+
+    /* ===== Book generation + viewer ===== */
+    const viewerEl = document.getElementById('book-viewer');
+    const leftBg = document.getElementById('left-bg');
+    const leftText = document.getElementById('left-text');
+    const rightImg = document.getElementById('right-img');
+    const pageIndicator = document.getElementById('page-indicator');
+    const bookTitleEl = document.getElementById('book-title');
+    const prevBtn = document.getElementById('prev');
+    const nextBtn = document.getElementById('next');
+    const openJsonBtn = document.getElementById('open-json');
+
+    let currentBook = null;   // { id, title, pages: [{chapter_index,text,image_urls[]}, ...] }
+    let pageIndex = 0;
+
+    function renderPage() {
+      if (!currentBook) return;
+      const page = currentBook.pages[pageIndex];
+      const mainImg = (page.image_urls && page.image_urls[0]) ? page.image_urls[0] : '';
+      leftBg.style.backgroundImage = mainImg ? `url(${mainImg})` : 'none';
+      leftText.innerHTML = `<h3>Chapter ${page.chapter_index + 1}</h3><p>${page.text.replace(/\n/g,'<br/>')}</p>`;
+      rightImg.src = mainImg || '';
+      pageIndicator.textContent = `Page ${pageIndex + 1} / ${currentBook.pages.length}`;
+      bookTitleEl.textContent = `• ${currentBook.title}`;
+      prevBtn.disabled = pageIndex === 0;
+      nextBtn.disabled = pageIndex === currentBook.pages.length - 1;
+    }
+
+    prevBtn.addEventListener('click', () => { if (pageIndex > 0) { pageIndex--; renderPage(); } });
+    nextBtn.addEventListener('click', () => { if (currentBook && pageIndex < currentBook.pages.length - 1) { pageIndex++; renderPage(); } });
+    openJsonBtn.addEventListener('click', () => {
+      if (!currentBook) return;
+      window.open(`${API_BASE}/books/${currentBook.id}`, '_blank');
+    });
+
+    document.getElementById('btn-book').addEventListener('click', async () => {
+      const prompt = document.getElementById('b-prompt').value.trim();
+      const age = document.getElementById('b-age').value.trim() || '4-7';
+      const style = document.getElementById('b-style').value.trim() || 'bedtime, watercolor, cozy';
+      const chapters = Math.max(1, Math.min(10, parseInt(document.getElementById('b-chapters').value || '3', 10)));
+      const ipc = Math.max(1, Math.min(3, parseInt(document.getElementById('b-ipc').value || '2', 10)));
+      if (!prompt) { alert('Please add a prompt.'); return; }
+
+      const status = document.getElementById('b-status');
+      status.textContent = 'Composing book (text + images)…';
+      try {
+        const res = await fetch(`${API_BASE}/books/compose`, {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ story: { prompt, age_range: age, style, chapters }, images_per_chapter: ipc })
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(()=>({detail:res.statusText}));
+          throw new Error(err.detail || 'Book compose failed');
+        }
+        const data = await res.json();
+        currentBook = data;
+        pageIndex = 0;
+        viewerEl.style.display = 'block';
+        renderPage();
+        status.textContent = 'Done.';
+        loadMedia(); // show images in gallery
+        loadStories(); // story saved as well
+      } catch (e) {
+        status.textContent = '';
+        alert(e.message || 'Book compose failed.');
+        console.error(e);
+      }
+    });
+
+    /* ===== Media Gallery ===== */
+    async function loadMedia() {
+      const grid = document.getElementById('media-list');
+      const empty = document.getElementById('media-empty');
+      grid.innerHTML = '';
+      empty.style.display = 'none';
+      try {
+        const res = await fetch(`${API_BASE}/debug/media`);
+        const data = await res.json();
+        const items = (data && Array.isArray(data.items)) ? data.items : [];
+        if (items.length === 0) { empty.style.display='block'; return; }
+        for (const it of items) {
+          const a = document.createElement('a'); a.className='thumb'; a.href = it.url; a.target='_blank'; a.rel='noopener';
+          const img = document.createElement('img'); img.src = it.url; img.alt = it.url.split('/').pop();
+          a.appendChild(img); grid.appendChild(a);
+        }
+      } catch (e) {
+        empty.style.display = 'block';
+        empty.textContent = 'Could not list media.'; console.error(e);
+      }
+    }
+    document.getElementById('btn-media-refresh').addEventListener('click', loadMedia);
+
+    // initial loads
+    loadStories();
+    loadMedia();
+  </script>
+</body>
+</html>
