@@ -177,7 +177,8 @@ def _image_size_px(aspect: str) -> Tuple[int, int]:
     return (1024, 1024)
 
 def _placeholder_svg(title: str, w: int, h: int) -> str:
-    t = (title or "StoryForge").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+    # Properly escaped SVG placeholder (this was broken)
+    t = (title or "StoryForge").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     return f"""<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}">
   <defs>
     <linearGradient id="g" x1="0" x2="1" y1="0" y2="1">
@@ -213,7 +214,6 @@ def _gen_image_to_file(prompt: str, aspect: str, dest_stem: Path) -> Path:
             prompt=prompt,
             size=_image_size(aspect),   # 1024x1024 | 1024x1536 | 1536x1024
             quality="high",
-            # gpt-image-1 always returns b64_json; no response_format arg
         )
         datum = resp.data[0] if getattr(resp, "data", None) else None
         b64 = getattr(datum, "b64_json", None)
@@ -244,7 +244,6 @@ def root():
 @app.get("/health", tags=["Root"])
 def health():
     return {"ok": True, "ts": int(time.time())}
-
 
 # ---- Stories ----
 @app.get("/stories", response_model=List[StoryItem], tags=["Stories"])
@@ -306,7 +305,6 @@ def delete_story(story_id: str):
     save_stories()
     return {"ok": True, "deleted_id": story_id}
 
-
 # ---- Images ----
 @app.post("/images", response_model=ImageResponse, tags=["Images"])
 def generate_image(req: ImageRequest):
@@ -315,7 +313,6 @@ def generate_image(req: ImageRequest):
     abs_path = _gen_image_to_file(req.prompt.strip(), req.aspect, dest_stem)
     rel = Path(abs_path).relative_to(DATA_ROOT)
     return ImageResponse(image_url=f"/media/{rel.as_posix()}")
-
 
 # ---- Books (legacy combined) ----
 @app.post("/books", response_model=BookResponse, tags=["Books"])
@@ -339,15 +336,13 @@ def generate_book(req: BookRequest):
 
     return BookResponse(id=final_id, title=story.title, chapters=story.chapters, image_urls=urls)
 
-
-# ---- Books (NEW: compose for viewer with 1–3 images per chapter) ----
+# ---- Books (compose for viewer with 1–3 images per chapter) ----
 @app.post("/books/compose", response_model=BookJSON, tags=["Books"])
 def compose_book(req: BookComposeRequest):
     """
     Creates a story and N images per chapter, returns JSON with pages for the flip viewer.
     Persists everything under /media/books/<book_id>/ (including book.json).
     """
-    # Ensure the story gets generated & saved in STORIES
     story_resp = generate_story(req.story)
 
     book_id = str(uuid.uuid4())
@@ -357,7 +352,6 @@ def compose_book(req: BookComposeRequest):
     pages: List[BookPage] = []
     for ci, chapter_text in enumerate(story_resp.chapters, start=1):
         img_urls: List[str] = []
-        # Generate up to 3 images per chapter
         for pi in range(1, req.images_per_chapter + 1):
             panel_note = f"Panel {pi} of {req.images_per_chapter}."
             iprompt = _image_prompt_from_chapter(story_resp.title, chapter_text, req.story.style, panel_note=panel_note)
@@ -379,7 +373,6 @@ def compose_book(req: BookComposeRequest):
         pages=pages
     )
 
-    # persist book.json
     with open(book_dir / "book.json", "w", encoding="utf-8") as f:
         f.write(book_json.model_dump_json(indent=2))
 
@@ -392,11 +385,9 @@ def get_book(book_id: str):
         raise HTTPException(status_code=404, detail="book not found")
     try:
         data = json.loads(book_file.read_text(encoding="utf-8"))
-        # pydantic validation on read
         return BookJSON(**data)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"failed to read book.json: {e}")
-
 
 # ---- Debug helpers ----
 @app.get("/debug/media")
@@ -407,12 +398,13 @@ def debug_media():
         if p.is_file():
             rel = p.relative_to(DATA_ROOT).as_posix()
             items.append({"url": f"/media/{rel}", "bytes": p.stat().st_size})
-    # sort newest first
+
     def _mtime_safe(p):
         try:
             return p.stat().st_mtime
         except Exception:
             return 0
+
     items.sort(key=lambda x: _mtime_safe(DATA_ROOT / x["url"].replace("/media/", "")), reverse=True)
     return {"root": str(DATA_ROOT), "count": len(items), "items": items[:200]}
 
