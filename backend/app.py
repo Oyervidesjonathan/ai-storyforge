@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field, constr
 from openai import OpenAI
 
 SERVICE_NAME = "AI StoryForge"
-APP_VERSION  = "0.4.2"  # adds /books/list + aliases and route logging
+APP_VERSION  = "0.4.3"  # tolerant /books/list variants
 
 # ---------- OpenAI client ----------
 OPENAI_API_KEY     = os.getenv("OPENAI_API_KEY", "")
@@ -86,7 +86,7 @@ class BookRequest(BaseModel):
     story: StoryRequest
     images: bool = True
 
-# Pages used in compose endpoints
+# compose models
 class Page(BaseModel):
     chapter_index: int
     text: str
@@ -107,6 +107,14 @@ class BookResponse(BaseModel):
     title: str
     chapters: List[str]
     image_urls: Optional[List[str]] = None
+
+# list item for shelf
+class BookListItem(BaseModel):
+    id: str
+    title: str
+    cover_url: Optional[str] = None
+    created_at: Optional[int] = None
+    pages: int
 
 # ---------- Story Storage ----------
 STORIES: Dict[str, Dict] = {}
@@ -160,7 +168,6 @@ def _image_prompts_for_chapter(title: str, chapter_text: str, style_hint: str, n
     base = _image_prompt_from_chapter(title, chapter_text, style_hint)
     return [f"{base} Depict key moment {i}." for i in range(1, n + 1)]
 
-# gpt-image-1 valid sizes only
 def _image_size(aspect: str) -> str:
     a = (aspect or "square").lower()
     if a.startswith("port"): return "1024x1536"
@@ -194,7 +201,6 @@ def _placeholder_svg(title: str, w: int, h: int) -> str:
 </svg>"""
 
 def _gen_image_to_file(prompt: str, aspect: str, dest_stem: Path) -> Path:
-    """Generate PNG via gpt-image-1 (b64), fallback to SVG placeholder."""
     w, h = _image_size_px(aspect)
     dest_stem.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -369,14 +375,7 @@ def read_book(book_id: str):
         cover_url=meta.get("cover_url"),
     )
 
-# ---- Books shelf listing (cover + metadata) ----
-class BookListItem(BaseModel):
-    id: str
-    title: str
-    cover_url: Optional[str] = None
-    created_at: Optional[int] = None
-    pages: int
-
+# ---- Books shelf listing (tolerant endpoints) ----
 def _scan_books() -> List[BookListItem]:
     books_dir = DATA_ROOT / "books"
     if not books_dir.exists():
@@ -402,10 +401,13 @@ def _scan_books() -> List[BookListItem]:
     items.sort(key=lambda x: x.created_at or 0, reverse=True)
     return items
 
-@app.get("/books/list", response_model=List[BookListItem], tags=["Books"])
-def list_books_alias_1():
+# Accept GET/POST/OPTIONS and with/without trailing slash
+@app.api_route("/books/list", methods=["GET", "POST", "OPTIONS"], tags=["Books"])
+@app.api_route("/books/list/", methods=["GET", "POST", "OPTIONS"], tags=["Books"])
+def list_books_tolerant():
     return _scan_books()
 
+# Keep simple aliases too (GET)
 @app.get("/books", response_model=List[BookListItem], tags=["Books"])
 def list_books_alias_2():
     return _scan_books()
@@ -422,7 +424,6 @@ def debug_media():
         if p.is_file():
             rel = p.relative_to(DATA_ROOT).as_posix()
             items.append({"url": f"/media/{rel}", "bytes": p.stat().st_size})
-    # recent first
     def mtime(item):
         try:
             return (DATA_ROOT / item["url"].replace("/media/", "")).stat().st_mtime
