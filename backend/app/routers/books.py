@@ -1,4 +1,3 @@
-# backend/app/routers/books.py
 import os, time, uuid, json, base64
 from typing import List, Optional, Dict, Tuple
 from pathlib import Path
@@ -19,7 +18,7 @@ if not OPENAI_API_KEY:
 else:
     client = OpenAI(api_key=OPENAI_API_KEY, organization=(OPENAI_ORG_ID or None))
 
-# -------- Storage / media root (mirror main.py logic) --------
+# -------- Storage / media root --------
 DEFAULT_MEDIA = Path(__file__).resolve().parents[1] / "data"
 DATA_ROOT = Path(os.getenv("MEDIA_ROOT", "/data"))
 if not DATA_ROOT.exists():
@@ -29,7 +28,7 @@ DATA_ROOT.mkdir(parents=True, exist_ok=True)
 BOOKS_DIR = DATA_ROOT / "books"
 BOOKS_DIR.mkdir(parents=True, exist_ok=True)
 
-# ✅ Persist stories in the mounted volume so they survive restarts
+# ✅ persist stories in /data
 STORIES_FILE = DATA_ROOT / "stories.json"
 STORIES: Dict[str, Dict] = {}
 
@@ -55,7 +54,7 @@ def _save_stories():
 
 _load_stories()
 
-# --------- Pydantic models ---------
+# --------- models ---------
 class StoryRequest(BaseModel):
     prompt: constr(strip_whitespace=True, min_length=3)
     age_range: constr(strip_whitespace=True) = Field("4-7")
@@ -241,8 +240,7 @@ def generate_image(req: ImageRequest):
 # ===== Books: compose -> persist book.json =====
 @router.post("/books/compose", response_model=BookComposeResponse, tags=["Books"])
 def compose_book(req: BookComposeRequest):
-    # First create the story (and save it to stories.json)
-    s = generate_story(req.story)
+    s = generate_story(req.story)  # create story + persist
 
     book_id = str(uuid.uuid4())
     book_dir = BOOKS_DIR / book_id
@@ -325,7 +323,7 @@ def list_bookshelf():
 def list_books_tolerant():
     return _scan_books()
 
-# ---- Debug helpers kept for convenience ----
+# ---- Debug helpers ----
 @router.get("/debug/media")
 def debug_media():
     items = []
@@ -351,9 +349,8 @@ def debug_read_media(path: str = Query(..., description="Path relative to /media
         raise HTTPException(status_code=404, detail="not found")
     return {"root": str(DATA_ROOT), "path": path, "exists": True, "bytes": target.stat().st_size}
 
-# ========= BEGIN PATCH: inline edit APIs (text + image) =========
+# ========= INLINE EDIT APIS (text + image) =========
 
-# ---- helpers for edits ----
 def _book_dir(book_id: str) -> Path:
     return BOOKS_DIR / book_id
 
@@ -375,31 +372,22 @@ def _save_book_json(book_id: str, data: dict) -> None:
     jf.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 def _media_url_to_abs(media_url: str) -> Path:
-    """
-    Convert '/media/...' URL into absolute file path under DATA_ROOT.
-    """
     if not media_url.startswith("/media/"):
         raise HTTPException(status_code=400, detail="expected a /media/... url")
     rel = media_url[len("/media/"):]  # e.g. 'books/<id>/ch01_img1.png'
     return DATA_ROOT / rel
 
-# ---- request models ----
 class ChapterTextPatch(BaseModel):
-    chapter_index: int  # 0-based index into pages[]
-    markdown: str       # new text
+    chapter_index: int
+    markdown: str
 
 class ImageEditReq(BaseModel):
-    chapter_index: int  # 0-based
-    image_index: int    # 0-based within that chapter
-    prompt: str         # edit description (ChatGPT-style)
+    chapter_index: int
+    image_index: int
+    prompt: str
 
-# ---- routes ----
 @router.put("/books/{book_id}/edit-text", tags=["Books"])
 def edit_book_text(book_id: str, patch: ChapterTextPatch):
-    """
-    Update the text of a chapter (pages[chapter_index].text) and persist to book.json
-    without regenerating anything.
-    """
     meta = _load_book_json(book_id)
     pages = meta.get("pages", [])
     if patch.chapter_index < 0 or patch.chapter_index >= len(pages):
@@ -411,10 +399,6 @@ def edit_book_text(book_id: str, patch: ChapterTextPatch):
 
 @router.post("/books/{book_id}/edit-image", tags=["Books"])
 def edit_book_image(book_id: str, req: ImageEditReq):
-    """
-    Regenerate/overwrite one image file in-place using the provided prompt.
-    Keeps the filename and URL stable; updates book.json timestamps.
-    """
     meta = _load_book_json(book_id)
     pages = meta.get("pages", [])
     if req.chapter_index < 0 or req.chapter_index >= len(pages):
@@ -424,14 +408,12 @@ def edit_book_image(book_id: str, req: ImageEditReq):
     if req.image_index < 0 or req.image_index >= len(img_urls):
         raise HTTPException(status_code=400, detail="invalid image index")
 
-    # Resolve current file path from the /media/ URL
     current_url = img_urls[req.image_index]
-    abs_path = _media_url_to_abs(current_url)             # /data/books/<id>/chXX_imgY.png
+    abs_path = _media_url_to_abs(current_url)
     abs_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Generate to a temp name, then atomically replace the target
     tmp_stem = abs_path.parent / f"_tmp_{uuid.uuid4().hex}"
-    out_tmp = _gen_image_to_file(req.prompt.strip(), "square", tmp_stem)  # returns a Path
+    out_tmp = _gen_image_to_file(req.prompt.strip(), "square", tmp_stem)
     os.replace(out_tmp, abs_path)
 
     meta["last_modified"] = int(time.time())
@@ -441,5 +423,3 @@ def edit_book_image(book_id: str, req: ImageEditReq):
 
     return {"ok": True, "book_id": book_id, "chapter_index": req.chapter_index,
             "image_index": req.image_index, "url": current_url}
-
-# ========= END PATCH =========
