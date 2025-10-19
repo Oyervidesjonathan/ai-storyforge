@@ -2,6 +2,7 @@
 import os, time, uuid, json, base64
 from typing import List, Optional, Dict, Tuple
 from pathlib import Path
+
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, constr
@@ -10,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 SERVICE_NAME = "AI StoryForge"
-APP_VERSION = "0.4.0"
+APP_VERSION  = "0.4.0"
 
 # ---------- OpenAI client ----------
 OPENAI_API_KEY     = os.getenv("OPENAI_API_KEY", "")
@@ -155,10 +156,7 @@ def _image_prompt_from_chapter(title: str, chapter_text: str, style_hint: str) -
 
 def _image_prompts_for_chapter(title: str, chapter_text: str, style_hint: str, n: int) -> List[str]:
     base = _image_prompt_from_chapter(title, chapter_text, style_hint)
-    prompts = []
-    for i in range(1, n+1):
-        prompts.append(f"{base} Depict key moment {i}.")
-    return prompts
+    return [f"{base} Depict key moment {i}." for i in range(1, n + 1)]
 
 # gpt-image-1 valid sizes only
 def _image_size(aspect: str) -> str:
@@ -173,24 +171,28 @@ def _image_size_px(aspect: str) -> Tuple[int, int]:
     if a.startswith("land"): return (1536, 1024)
     return (1024, 1024)
 
-def _placeholder_svg(title: str, w: int, h: int) -> str:
-    t = (title or "StoryForge").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
-    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}">
+def _placeholder_svg(_: str, w: int, h: int) -> str:
+    """
+    Quiet SVG placeholder that never echoes user input.
+    """
+    w = max(64, min(4096, int(w or 1024)))
+    h = max(64, min(4096, int(h or 1024)))
+    big = int(min(w, h) * 0.06)
+    small = int(min(w, h) * 0.035)
+    radius = int(min(w, h) * 0.04)
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}">
   <defs>
-    <linearGradient id="g" x1="0" x2="1" y1="0" y2="1">
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0%" stop-color="#fde68a"/>
       <stop offset="100%" stop-color="#fca5a5"/>
     </linearGradient>
   </defs>
-  <rect width="100%" height="100%" fill="url(#g)" rx="24" ry="24"/>
-  <text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle"
-        font-family="Arial, sans-serif" font-size="{int(min(w,h)*0.08)}" fill="#1f2937">
-    {t[:50]}
-  </text>
-  <text x="50%" y="62%" dominant-baseline="middle" text-anchor="middle"
-        font-family="Arial, sans-serif" font-size="{int(min(w,h)*0.04)}" fill="#374151">
-    (placeholder illustration)
-  </text>
+  <rect width="100%" height="100%" fill="url(#g)" rx="{radius}" ry="{radius}"/>
+  <g fill="#1f2937" font-family="Arial, sans-serif" text-anchor="middle">
+    <text x="{w/2}" y="{h*0.48}" font-size="{big}" opacity="0.7">Image unavailable</text>
+    <text x="{w/2}" y="{h*0.62}" font-size="{small}" opacity="0.6">(placeholder illustration)</text>
+  </g>
 </svg>"""
 
 def _gen_image_to_file(prompt: str, aspect: str, dest_stem: Path) -> Path:
@@ -217,7 +219,7 @@ def _gen_image_to_file(prompt: str, aspect: str, dest_stem: Path) -> Path:
     except Exception as e:
         print(f"⚠️ Image API failed, using placeholder: {e}")
         out = dest_stem.with_suffix(".svg")
-        out.write_text(_placeholder_svg(prompt, w, h), encoding="utf-8")
+        out.write_text(_placeholder_svg("", w, h), encoding="utf-8")
         return out
 
 def _require_client():
