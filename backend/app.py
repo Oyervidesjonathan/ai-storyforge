@@ -427,6 +427,8 @@ def compose_book(req: BookComposeRequest):
     print(f"📖 Composed book {book_id} • pages={len(pages)} • dir={book_dir}")
     return BookComposeResponse(id=book_id, title=s.title, pages=pages, cover_url=cover_url)
 
+#============ Books ID Get Function =========================
+
 from fastapi.responses import JSONResponse
 
 @app.get("/books/{book_id}", response_model=BookComposeResponse, tags=["Books"])
@@ -436,15 +438,12 @@ def read_book(book_id: str):
         raise HTTPException(status_code=404, detail="Book not found")
     meta = json.loads(book_file.read_text(encoding="utf-8"))
 
-    return JSONResponse(
-        content={
-            "id": meta["id"],
-            "title": meta["title"],
-            "pages": meta["pages"],
-            "cover_url": meta.get("cover_url"),
-        },
-        headers={"Cache-Control": "no-store, max-age=0"},
-    )
+    # return JSON with cache-busting headers
+    resp = JSONResponse(content=meta)
+    resp.headers["Cache-Control"] = "no-store, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
 
 
 # ============================================================
