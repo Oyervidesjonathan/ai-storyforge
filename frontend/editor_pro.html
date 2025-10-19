@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+const data = await r.json();
+const g = el('gallery'); g.innerHTML = '';
+data.items.forEach(u => {
+const b = document.createElement('button');
+b.className = 'rounded-xl overflow-hidden border';
+b.innerHTML = `<img class="thumb w-[100px]" src="${u}">`;
+b.onclick = () => { setBg(u); };
+g.appendChild(b);
+});
+}
+
+
+// ====== EVENTS ======
+el('chapSelect').addEventListener('change', (e) => {
+currentChapter = parseInt(e.target.value, 10);
+loadChapter(currentChapter);
+});
+
+
+el('btnSaveText').addEventListener('click', async () => {
+const payload = { text: el('chapterText').value };
+const r = await fetch(API(`/chapter/${currentChapter}`), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+toast(await r.text());
+});
+
+
+el('btnApplyEdit').addEventListener('click', async () => {
+const prompt = el('editPrompt').value.trim();
+if (!prompt) return alert('Enter an edit prompt first.');
+const scope = el('applyTo').value;
+const targets = scope === 'all' ? chapterImages : [chapterImages[selectedIndex]];
+const r = await fetch('/images/edit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt, images: targets }) });
+const res = await r.json();
+if (res && res.updated) {
+chapterImages = res.updated;
+renderThumbs();
+applySelection();
+}
+});
+
+
+// Format modal
+const modal = el('formatModal');
+el('btnFormat').addEventListener('click', () => modal.showModal());
+el('btnDoFormat').addEventListener('click', async (ev) => {
+ev.preventDefault();
+const payload = {
+trim: el('optTrim').value,
+bleed: el('optBleed').value === 'yes',
+font: el('optFont').value,
+line_height: parseFloat(el('optLH').value),
+bg_style: el('optBG').value
+};
+const r = await fetch(API('/format'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+const { pdf_url } = await r.json();
+modal.close();
+if (pdf_url) {
+const a = document.createElement('a');
+a.href = pdf_url; a.download = '';
+a.click();
+}
+});
+
+
+// Init
+loadBook();
+</script>
+</body>
+</html>
