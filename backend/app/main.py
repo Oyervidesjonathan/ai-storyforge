@@ -2,6 +2,7 @@
 import os, time, json, re
 from pathlib import Path
 from typing import List, Optional, Dict
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -9,7 +10,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 SERVICE_NAME = "AI StoryForge"
-APP_VERSION  = "0.5.2"
+APP_VERSION  = "0.6.0"
 
 # ------- MEDIA ROOT -------
 DEFAULT_MEDIA = Path(__file__).resolve().parent.parent / "data"
@@ -32,12 +33,21 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], allow_methods=["*"], allow_headers=["*"], allow_credentials=True,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+    allow_credentials=True,
 )
 
-# Mount static (frontend) + media
+# ---------- Static (frontend) + media ----------
 frontend_dir = Path(__file__).resolve().parents[1] / "frontend"
+if not frontend_dir.exists():
+    print(f"⚠️ frontend dir not found at {frontend_dir}")
+
+# Serve your static frontend assets (index.html, editor_pro.html, etc.)
 app.mount("/static", StaticFiles(directory=str(frontend_dir)), name="static")
+
+# Serve generated images and exported PDFs
 app.mount("/media", StaticFiles(directory=str(DATA_ROOT)), name="media")
 
 # ---------- Simple health/root ----------
@@ -50,11 +60,20 @@ def health():
     return {"ok": True, "ts": int(time.time())}
 
 # ---------- UI ----------
+# Old editor/landing
 @app.get("/ui")
 def ui():
     return FileResponse(str(frontend_dir / "index.html"))
 
-# ---------- Include feature router that creates books ----------
+# New Pro Editor UI (served directly)
+@app.get("/editor")
+def editor_pro():
+    p = frontend_dir / "editor_pro.html"
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="editor_pro.html not found in /frontend")
+    return FileResponse(str(p))
+
+# ---------- Include feature router that creates/edits/books + formatter ----------
 from .routers.books import router as books_router
 app.include_router(books_router)
 
