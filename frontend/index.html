@@ -4,111 +4,209 @@
   <meta charset="UTF-8" />
   <title>AI StoryForge 📖</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <style>
-    :root{
-      --bg:#faf6f2; --ink:#333; --muted:#666; --card:#fff; --shadow:0 2px 4px rgba(0,0,0,0.1);
-      --accent:#333; --accent-2:#555; --border:#eee; --cream:#fbf6ef;
-    }
-    *{ box-sizing:border-box; }
-    body { font-family: Arial, sans-serif; background: var(--bg); color: var(--ink); padding: 20px; }
-    h1 { text-align: center; }
-    h2 { margin: 0 0 10px 0; }
+ <style>
+  /* ================= StoryForge Theme (Drop-in) ================= */
+  :root{
+    /* warm parchment + ink */
+    --bg-1:#f8efe7;      /* light parchment */
+    --bg-2:#f3e6da;      /* deeper parchment */
+    --ink:#2a2a2a;
+    --muted:#6f6b64;
 
-    /* ===== Common ===== */
-    .row { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
-    .card { background:var(--card); padding:20px; margin-top:20px; border-radius:8px; box-shadow:var(--shadow); }
-    .muted { color:var(--muted); font-size: 0.95em; }
-    .btn { background:var(--accent); color:#fff; border:none; border-radius:8px; padding:8px 12px; cursor:pointer; }
-    .btn:hover{ background:var(--accent-2); }
-    .btn-ghost{ background:#eee; color:#222; }
-    .btn-ghost:hover{ background:#e3e3e3; }
-    .hr { height:1px; background:var(--border); margin:16px 0; }
-    .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap:12px; }
-    .thumb { border:1px solid var(--border); border-radius:8px; overflow:hidden; box-shadow:0 2px 4px rgba(0,0,0,0.08); background:#fff; }
-    .thumb img { display:block; width:100%; height:auto; }
-    .empty { color:#666; text-align:center; padding:18px 8px; }
+    /* accents */
+    --accent:#7c4d2b;    /* cocoa */
+    --accent-2:#5f3a20;  /* deeper cocoa */
+    --gold-1:#f7d37b;    /* soft gold */
+    --gold-2:#f0b15a;    /* amber */
 
-    /* ===== Stories ===== */
-    .story-list { display: flex; flex-direction: column; gap: 10px; margin-top: 20px; }
-    .story-card { padding: 12px; background: white; border-radius: 8px; box-shadow: var(--shadow); cursor: pointer; position: relative; }
-    .story-card:hover { background: #f1ece7; }
-    .story-title { font-size: 1.2em; margin-bottom: 4px; }
-    .story-meta { font-size: 0.9em; color: #666; }
-    .story-view { margin-top: 20px; padding: 20px; background: #fff; border-radius: 8px; box-shadow: var(--shadow); }
-    .back-btn { margin-top: 15px; }
-    .delete-btn { position: absolute; top: 10px; right: 10px; background: none; border: none; cursor: pointer; font-size: 1.2em; }
-    .delete-btn:hover { color: red; }
-    .create-form { background: #fff; padding: 20px; margin-top: 20px; border-radius: 8px; box-shadow: var(--shadow); }
-    .create-form input, .create-form textarea { width: 100%; margin: 5px 0; padding: 8px; font-size: 1em; }
-    .create-form button { margin-top: 10px; }
+    /* chrome */
+    --card:#ffffffee;
+    --card-border:#ecd9c9;
+    --shadow:0 10px 24px rgba(87,60,30,.12);
+    --ring:#f0b15a66;
+    --radius:14px;
+  }
 
-    /* ===== Book Builder form ===== */
-    .book-form{
-      display:grid;
-      grid-template-columns: 1.6fr 0.7fr 1fr 120px 160px;
-      gap:12px 16px;
-      align-items:end;
-      margin-top:10px;
-    }
-    .book-form .field label{ display:block; font-weight:600; margin-bottom:4px; }
-    .book-form textarea,.book-form input,.book-form select{ width:100%; padding:8px; font-size:1em; }
-    #b-prompt{ min-height:56px; resize:vertical; }
-    .book-actions{ grid-column:1 / -1; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  *{ box-sizing:border-box; }
+  html,body{ height:100%; }
+  body{
+    margin:0; padding:24px;
+    color:var(--ink);
+    font: 15px/1.55 system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji","Segoe UI Emoji";
+    /* parchment gradient + subtle vignette */
+    background:
+      radial-gradient(1200px 700px at 100% -100%, #0000 60%, rgba(120,70,30,.05)),
+      radial-gradient(1200px 700px at -20% 120%, #0000 60%, rgba(120,70,30,.06)),
+      linear-gradient(180deg, var(--bg-1) 0%, var(--bg-2) 100%);
+  }
 
-    @media (max-width: 980px){
-      .book-form{ grid-template-columns: 1fr; }
-    }
+  /* Heading with gentle gradient fill */
+  h1{
+    margin: 6px 0 18px;
+    font-size: clamp(26px, 2.6vw, 34px);
+    line-height:1.1;
+    text-align:center;
+    font-weight:800;
+    letter-spacing:.2px;
+    background: linear-gradient(180deg, #643e21, #1f140e 78%);
+    -webkit-background-clip:text;
+    background-clip:text;
+    color:transparent;
+  }
+  h1:before{
+    content:"📚";
+    display:inline-block;
+    margin-right:.45rem;
+    filter: drop-shadow(0 1px 0 #fff8);
+  }
+  h2{
+    margin:0 0 10px 0;
+    font-size: clamp(18px, 1.6vw, 22px);
+    color:#3a2a1f;
+  }
 
-    /* ===== Books shelf ===== */
-    .shelf { display:grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap:14px; margin-top:10px; }
-    .book-card { background:#fff; border:1px solid var(--border); border-radius:10px; overflow:hidden; box-shadow:0 2px 6px rgba(0,0,0,.06); cursor:pointer; display:flex; flex-direction:column; }
-    .book-cover { aspect-ratio: 4/5; background:#f7f7f7; display:flex; align-items:center; justify-content:center; }
-    .book-cover img{ width:100%; height:100%; object-fit:cover; }
-    .book-meta { padding:10px; }
-    .book-title { font-size:.95em; font-weight:600; line-height:1.2; height:2.4em; overflow:hidden; }
-    .book-sub { color:#777; font-size:.85em; margin-top:4px; }
+  /* Cards */
+  .card,
+  .create-form,
+  .story-view,
+  .story-card,
+  #book-card,
+  #shelf-card,
+  #media-card,
+  #edit-view{
+    background: var(--card);
+    backdrop-filter: blur(3px) saturate(105%);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding:20px;
+  }
+  .card{ margin-top:18px; }
 
-    /* ===== Flip viewer ===== */
-    .viewer { margin-top:16px; }
-    .spread {
-      display:grid; grid-template-columns: 1fr 1fr; gap:16px;
-      min-height: 520px; border-radius: 12px; overflow: hidden;
-      box-shadow: 0 4px 10px rgba(0,0,0,0.08); background:#fff;
-    }
-    .left-page {
-      position: relative; padding: 20px;
-      display:flex; align-items:flex-start; justify-content:flex-start; overflow:hidden;
-    }
-    .left-bg {
-      position:absolute; inset:0;
-      background-size:cover; background-position:center;
-      filter: blur(14px) brightness(1.05);
-      transform: scale(1.1);
-      opacity: 0.35;
-    }
-    .left-overlay { position:absolute; inset:0; background:linear-gradient(90deg, rgba(255,255,255,0.92), rgba(255,255,255,0.65)); }
-    .left-content { position:relative; z-index:2; max-width: 92%; line-height:1.6; }
-    .left-content h3{ margin:0 0 8px 0; }
-    .right-page { display:flex; align-items:center; justify-content:center; background: #fafafa; }
-    .right-page img { width:100%; height:auto; object-fit:contain; }
-    .viewer-toolbar{
-      margin-top:10px; display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;
-    }
-    .viewer-meta{ color:#555; font-size:.95em; }
+  /* Text tones */
+  .muted{ color:var(--muted); }
 
-    /* ===== Edit view ===== */
-    .img-card { border:1px solid var(--border); background:var(--card); box-shadow:var(--shadow); border-radius:10px; padding:6px; cursor:pointer; }
-    .img-card.selected { outline:3px solid #888; }
+  /* Buttons */
+  .btn{
+    --pad-x: 14px; --pad-y: 9px;
+    appearance:none; border:0; cursor:pointer;
+    padding: var(--pad-y) var(--pad-x);
+    border-radius: 11px;
+    color:#3a260f; font-weight:700;
+    background: linear-gradient(180deg, var(--gold-1), var(--gold-2));
+    box-shadow: 0 2px 0 rgba(0,0,0,.08), inset 0 1px 0 #fff8;
+    transition: transform .05s ease, filter .15s ease, box-shadow .15s ease;
+  }
+  .btn:hover{ filter: brightness(1.03); }
+  .btn:active{ transform: translateY(1px); box-shadow: inset 0 1px 2px rgba(0,0,0,.15); }
 
-    /* ===== Modal ===== */
-    dialog { border:none; border-radius:12px; padding:0; box-shadow:0 20px 50px rgba(0,0,0,.25); width:100%; max-width:520px; }
-    dialog::backdrop{ background:rgba(0,0,0,.3); }
-    .modal-h { padding:14px 16px; border-bottom:1px solid var(--border); font-weight:700; }
-    .modal-b { padding:16px; display:grid; grid-template-columns:1fr 1fr; gap:12px; }
-    .modal-b label{ font-size:.9em; color:#444; }
-    .modal-b select { width:100%; padding:8px; }
-    .modal-f { padding:14px 16px; border-top:1px solid var(--border); display:flex; justify-content:flex-end; gap:8px; }
-  </style>
+  /* Secondary button style (when you already used .btn for gold) */
+  .btn.secondary{
+    background: linear-gradient(180deg, #e6d6c7, #d9c3af);
+    color:#3b2a1c;
+  }
+
+  /* Inputs / selects / textareas */
+  input, select, textarea{
+    width:100%;
+    padding:10px 12px;
+    border-radius:10px;
+    border:1px solid var(--card-border);
+    background:#fffdfa;
+    color:var(--ink);
+    outline:none;
+    transition: box-shadow .18s ease, border-color .18s ease, background .18s;
+  }
+  textarea{ resize: vertical; }
+  input:focus, select:focus, textarea:focus{
+    border-color: #e9c08f;
+    box-shadow: 0 0 0 4px var(--ring);
+    background:#fffef9;
+  }
+
+  /* Simple section divider */
+  .hr{ height:1px; background:linear-gradient(90deg, #0000, #e9d7c6, #0000); margin:16px 0; }
+
+  /* Story list cards */
+  .story-list{ display:flex; flex-direction:column; gap:12px; margin-top:18px; }
+  .story-card{
+    position:relative; padding:14px 16px;
+    transition: transform .08s ease, box-shadow .18s ease;
+    cursor:pointer;
+  }
+  .story-card:hover{ transform: translateY(-1px); box-shadow: 0 12px 26px rgba(70,45,24,.12); background:#fffdf8; }
+  .story-title{ font-size:1.05rem; font-weight:700; }
+  .story-meta{ font-size:.92rem; color:#7a6f66; }
+  .delete-btn{
+    position:absolute; top:8px; right:8px; border:0; background:transparent; font-size:1.1rem; cursor:pointer; color:#9a7b64;
+  }
+  .delete-btn:hover{ color:#c55; }
+
+  /* Book builder layout stays the same, just fresher spacing */
+  .book-form{
+    display:grid;
+    grid-template-columns: 1.6fr 0.7fr 1fr 120px 160px;
+    gap:14px 16px;
+    align-items:end;
+    margin-top:10px;
+  }
+  .book-form .field label{ display:block; font-weight:700; margin-bottom:6px; color:#3b2a1f; }
+  #b-prompt{ min-height:64px; }
+
+  @media (max-width: 980px){
+    .book-form{ grid-template-columns: 1fr; }
+  }
+
+  /* Shelf */
+  .shelf{
+    display:grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+    gap:16px; margin-top:12px;
+  }
+  .book-card{
+    border:1px solid var(--card-border);
+    border-radius:12px; overflow:hidden; cursor:pointer;
+    background:#fffefb; box-shadow: var(--shadow);
+    transition: transform .08s ease, box-shadow .18s ease, border-color .18s;
+  }
+  .book-card:hover{ transform: translateY(-2px); box-shadow: 0 14px 28px rgba(70,45,24,.14); border-color:#e7c8a9; }
+  .book-cover{ aspect-ratio:4/5; background:linear-gradient(180deg,#f8eee2,#f3e2cf); display:flex; align-items:center; justify-content:center; }
+  .book-cover img{ width:100%; height:100%; object-fit:cover; }
+  .book-meta{ padding:10px; }
+  .book-title{ font-weight:700; font-size:.96rem; color:#3a2a1f; height:2.5em; overflow:hidden; }
+  .book-sub{ color:#8a7b6f; font-size:.86rem; margin-top:4px; }
+
+  .empty{ color:#7b7269; text-align:center; padding:20px 8px; }
+
+  /* Viewer */
+  .viewer{ margin-top:16px; }
+  .spread{
+    display:grid; grid-template-columns: 1fr 1fr; gap:16px;
+    min-height:520px; border-radius:14px; overflow:hidden;
+    box-shadow: 0 18px 34px rgba(70,45,24,.16);
+    background:linear-gradient(180deg,#fffdf8,#fffaf1);
+    border:1px solid var(--card-border);
+  }
+  .left-page{ position:relative; padding:20px; display:flex; align-items:flex-start; justify-content:flex-start; overflow:hidden; }
+  .left-bg{ position:absolute; inset:0; background-size:cover; background-position:center; filter: blur(14px) brightness(1.05); transform: scale(1.1); opacity:.35; }
+  .left-overlay{ position:absolute; inset:0; background:linear-gradient(90deg, rgba(255,255,255,0.92), rgba(255,255,255,0.68)); }
+  .left-content{ position:relative; z-index:2; max-width:92%; line-height:1.6; color:#2c1d12; }
+  .right-page{ display:flex; align-items:center; justify-content:center; background: #fff9f0; }
+  .right-page img{ width:100%; height:auto; object-fit:contain; }
+  .viewer-toolbar{ margin-top:12px; display:flex; align-items:center; justify-content:space-between; gap:12px; }
+  .viewer-meta{ color:#6d5d52; font-size:.95rem; }
+
+  /* Edit view thumbs */
+  .img-card{
+    border:1px solid var(--card-border); background:var(--card); box-shadow: var(--shadow);
+    border-radius:12px; padding:6px; cursor:pointer; transition: box-shadow .18s ease, border-color .18s;
+  }
+  .img-card:hover{ border-color:#e6c9a9; }
+  .img-card.selected{ outline:3px solid #e8be83; }
+
+  /* Small utility spacing to match new look */
+  .back-btn{ margin-top: 10px; }
+</style>
+
 </head>
 <body>
   <h1>📚 AI StoryForge</h1>
