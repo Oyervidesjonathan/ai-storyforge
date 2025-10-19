@@ -76,7 +76,7 @@ def editor_pro():
     return FileResponse(str(frontend_dir / "index.html"))
 
 # ---------- Include feature router that creates/edits/books + formatter ----------
-from .routers.books import router as books_router
+from backend.app.routers.books import router as books_router
 app.include_router(books_router)
 
 # ---------- Models used by the shelf/list ----------
