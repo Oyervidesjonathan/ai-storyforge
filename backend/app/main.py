@@ -1,80 +1,65 @@
-# main.py
-from fastapi import FastAPI, HTTPException, Request
+# backend/app/main.py
+import os, time, json
+from pathlib import Path
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
-from typing import Optional, List, Dict
-import logging, uuid, time
+from fastapi.staticfiles import StaticFiles
 
-app = FastAPI(title="AI StoryForge", version="1.0.0")
+SERVICE_NAME = "AI StoryForge"
+APP_VERSION  = "0.5.0"
 
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("storyforge")
+# ------- MEDIA ROOT -------
+DEFAULT_MEDIA = Path(__file__).resolve().parent.parent / "data"
+DATA_ROOT = Path(os.getenv("MEDIA_ROOT", "/data"))
+if not DATA_ROOT.exists():
+    DATA_ROOT = DEFAULT_MEDIA
+DATA_ROOT.mkdir(parents=True, exist_ok=True)
+
+print("📂 MEDIA ROOT =", str(DATA_ROOT.resolve()))
+print("📦 Exists?", DATA_ROOT.exists(), "Writable?", os.access(DATA_ROOT, os.W_OK))
+
+app = FastAPI(
+    title=SERVICE_NAME,
+    version=APP_VERSION,
+    description="Generate children's stories and illustrations."
+)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # replace with your frontend origin if you want
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=["*"], allow_methods=["*"], allow_headers=["*"], allow_credentials=True,
 )
 
-class StoryRequest(BaseModel):
-    prompt: str = Field(..., min_length=3)
-    length: Optional[int] = Field(300, ge=50, le=5000)
-    style: Optional[str] = Field("default")
+# Mount static (your index.html lives under frontend/)
+frontend_dir = Path(__file__).resolve().parents[1] / "frontend"
+app.mount("/static", StaticFiles(directory=str(frontend_dir)), name="static")
 
-class StoryResponse(BaseModel):
-    id: str
-    prompt: str
-    text: str
-    length: int
-    style: str
-    status: str = "ready"
+# Mount /media so saved files & books are directly served
+app.mount("/media", StaticFiles(directory=str(DATA_ROOT)), name="media")
 
-DB: Dict[str, StoryResponse] = {}
-
+# -------- Simple health/root --------
 @app.get("/")
 def root():
-    return {"service": "AI StoryForge", "docs": "/docs", "health": "/health"}
+    return {"service": SERVICE_NAME, "docs": "/docs", "health": "/health"}
 
 @app.get("/health")
 def health():
-    return {"ok": True}
+    return {"ok": True, "ts": int(time.time())}
 
-# ✅ Fixes the 405
-@app.get("/stories", response_model=List[StoryResponse])
-def list_stories():
-    return list(DB.values())
+# -------- UI passthrough (serves frontend/index.html) --------
+from fastapi.responses import FileResponse
+@app.get("/ui")
+def ui():
+    return FileResponse(str(frontend_dir / "index.html"))
 
-@app.get("/stories/{story_id}", response_model=StoryResponse)
-def get_story(story_id: str):
-    if story_id not in DB:
-        raise HTTPException(status_code=404, detail="Not found")
-    return DB[story_id]
+# -------- Include Routers --------
+from .routers.books import router as books_router
+app.include_router(books_router)
 
-# ✅ Wraps errors so they don’t bubble up as 502
-@app.post("/stories", response_model=StoryResponse, status_code=201)
-async def create_story(req: StoryRequest, request: Request):
-    ct = request.headers.get("content-type", "")
-    if "application/json" not in ct:
-        # Prevents 422 and gives a clear message when UI sends form-data
-        raise HTTPException(status_code=415, detail="Use Content-Type: application/json")
-
-    t0 = time.time()
-    try:
-        # TODO: replace with your real generator call
-        body = f"Once upon a time… {req.prompt}\n\n({req.style} ~{req.length} words)"
-        story = StoryResponse(
-            id=str(uuid.uuid4()),
-            prompt=req.prompt,
-            text=body,
-            length=req.length or len(body.split()),
-            style=req.style or "default",
-        )
-        DB[story.id] = story
-        log.info("POST /stories ok id=%s in %.2fs", story.id, time.time() - t0)
-        return story
-    except Exception as e:
-        log.exception("POST /stories failed in %.2fs", time.time() - t0)
-        # Return 500 (so proxy won’t show 502)
-        raise HTTPException(status_code=500, detail=f"Story generation failed: {e}")
+# --------- Log routes on startup ---------
+@app.on_event("startup")
+def _log_routes():
+    paths = sorted({getattr(r, "path", "") for r in app.routes})
+    print("📚 Registered routes:")
+    for p in paths:
+        if p:
+            print("  •", p)
