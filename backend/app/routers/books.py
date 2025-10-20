@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field, constr
 from openai import OpenAI
 
-# ----- NEW: formatter deps -----
+# ----- formatter deps -----
 from jinja2 import Template
 from weasyprint import HTML
 
@@ -104,24 +104,26 @@ class BookListItem(BaseModel):
     created_at: Optional[int] = None
     pages: int
 
-# ----- NEW: formatter options -----
+# ----- formatter options -----
 class FormatOpts(BaseModel):
-    # Trim sizes supported
-    trim: str = "8.5x8.5"            # "8x10", "7x10" also supported
-    bleed: bool = False              # adds 0.125" each side
+    # Trim
+    trim: str = "8.5x8.5"            # "8x10", "7x10"
+    bleed: bool = False
 
     # Typography
     font: str = "Literata"
     line_height: float = 1.6
 
-    # Background treatment behind the text
+    # Background behind text
     bg_style: str = "blur"           # "blur" | "tint" | "none"
 
-    # Layout controls
+    # Layout
     layout: str = "alt"              # "right" | "alt" | "full_bleed"
-    image_scale: float = 0.92        # 0.70–0.98 (relative to column height)
+    image_scale: float = 0.92        # 0.70–0.98, relative to column height
     v_align: str = "center"          # "top" | "center" | "bottom"
-    y_offset_in: float = 0.00        # NEW: push the art down by inches
+
+    # NEW: art shape
+    image_style: str = "rounded"     # "rounded" | "blob" | "square"
 
 TRIMS: Dict[str, Tuple[float, float]] = {
     "8.5x8.5": (8.5, 8.5),
@@ -129,6 +131,7 @@ TRIMS: Dict[str, Tuple[float, float]] = {
     "7x10":    (7.0, 10.0),
 }
 
+# ---------- HTML template with BLOBBY clip-path ----------
 TEMPLATE_HTML = Template(r"""
 <!doctype html>
 <html>
@@ -137,38 +140,33 @@ TEMPLATE_HTML = Template(r"""
   <style>
     @page { size: {{ page_w_in }}in {{ page_h_in }}in; margin: 0; }
     :root{
-      --safe: 0.375in;                          /* inner safety from trim */
+      --safe: 0.375in;
       --lh: {{ line_height }};
       --font: '{{ font }}', Georgia, serif;
       --imgScale: {{ image_scale }};
-      --artTop: {{ y_offset_in }}in;            /* NEW: vertical push for art */
     }
     * { box-sizing: border-box; }
     body { margin:0; font-family: var(--font); color:#1b1510; }
 
-    /* Spread grid */
     .page{
       position:relative;
       width:{{ page_w_in }}in; height:{{ page_h_in }}in;
       display:grid; grid-template-columns: 1fr 1fr;
-      align-items: stretch;
-      column-gap: 0.25in;                       /* NEW: breathing room */
+      align-items: stretch; /* let art span full column height */
     }
     .page.flip .textbox { grid-column: 2; }
     .page.flip .art     { grid-column: 1; }
 
-    /* Background wash */
     .bg{
       position:absolute; inset:0; background-size:cover; background-position:center;
       {% if bg_style == 'blur' %}filter: blur(18px) brightness(1.05) saturate(1.05); transform: scale(1.08);{% endif %}
     }
     .tint{
       position:absolute; inset:0;
-      background: {% if bg_style == 'tint' %}#fbf6ef{% elif bg_style == 'none' %}transparent{% else %}transparent{% endif %};
+      background: {% if bg_style == 'tint' %}#fbf6ef{% else %}transparent{% endif %};
       opacity: {% if bg_style == 'tint' %}.92{% else %}1{% endif %};
     }
 
-    /* Text column */
     .textbox { position:relative; padding: var(--safe); }
     .box{
       background: rgba(255,255,255,.92);
@@ -180,57 +178,72 @@ TEMPLATE_HTML = Template(r"""
     }
     h1{ font-size:18pt; margin:0 0 .15in 0; }
 
-    /* Art column */
     .art{
       position:relative;
       padding: var(--safe);
-      padding-top: calc(var(--safe) + var(--artTop)); /* NEW: push image down */
       display:flex;
       justify-content:center;
       {% if v_align == 'top' %}align-items:flex-start;
       {% elif v_align == 'bottom' %}align-items:flex-end;
       {% else %}align-items:center;{% endif %}
     }
+
+    /* Default <img> presentation */
     .art img{
       display:block;
-      width: 100%;
+      width: auto;
       height: calc((100% - var(--safe)*2) * var(--imgScale));
       max-height: calc((100% - var(--safe)*2) * var(--imgScale));
       object-fit: contain;
-      object-position: center
-      border-radius:.08in;
+      border-radius:
+        {% if image_style == 'square' %}0{% else %}.08in{% endif %};
       background:#fff;
       box-shadow: 0 0.03in 0.08in rgba(0,0,0,.08);
     }
 
-    /* Full-bleed variant */
-    .page.full{
-      grid-template-columns: 1fr;
+    /* When using the BLOBBY style we render an SVG wrapper */
+    .blob-wrap{
+      width: 100%;
+      height: calc((100% - var(--safe)*2) * var(--imgScale));
+      max-height: calc((100% - var(--safe)*2) * var(--imgScale));
     }
-    .page.full .art{
-      padding:0;
-      align-items:stretch; justify-content:stretch;
-    }
-    .page.full .art img{
+    .blob-svg{
       width:100%; height:100%;
-      max-height: none;
-      object-fit: cover;                /* true edge-to-edge */
-      border-radius: 0;
-      box-shadow: none;
+      display:block;
+      box-shadow: 0 0.03in 0.08in rgba(0,0,0,.08);
+      background:#fff;
+      border-radius:.02in; /* subtle feather on edges */
     }
+
+    /* Full-bleed variant */
+    .page.full{ grid-template-columns: 1fr; }
+    .page.full .art{ padding:0; align-items:stretch; justify-content:stretch; }
+    .page.full .art img{ width:100%; height:100%; max-height:none; object-fit:cover; border-radius:0; box-shadow:none; }
     .page.full .textbox{
       position:absolute; left: var(--safe); top: var(--safe);
       width: calc(50% - var(--safe)); max-width: 60%;
       padding:0;
     }
-    .page.full .box{
-      background: rgba(255,255,255,.90);
-    }
+    .page.full .box{ background: rgba(255,255,255,.90); }
 
     .spacer{ page-break-after: always; }
   </style>
 </head>
 <body>
+
+  <!-- SVG defs for blob clip path (re-used across pages) -->
+  <svg width="0" height="0" style="position:absolute">
+    <defs>
+      <!-- organic blob shape (normalized 1000x1000 viewBox) -->
+      <clipPath id="sf-blob-clip" clipPathUnits="objectBoundingBox">
+        <!-- objectBoundingBox path version -->
+        <path d="M0.145,0.281 C0.221,0.093,0.407,0.013,0.598,0.039 C0.744,0.059,0.889,0.161,0.949,0.306
+                 C1.007,0.447,0.988,0.624,0.894,0.752 C0.793,0.889,0.611,0.969,0.43,0.953
+                 C0.248,0.935,0.095,0.822,0.038,0.673 C-0.016,0.535,0.060,0.450,0.145,0.281 Z"/>
+      </clipPath>
+    </defs>
+  </svg>
+
   {% for ch in chapters %}
     <section class="page{% if ch.flip %} flip{% endif %}{% if ch.full_bleed %} full{% endif %}">
       {% if ch.bg_src %}<div class="bg" style="background-image:url('{{ ch.bg_src }}');"></div>{% endif %}
@@ -243,8 +256,31 @@ TEMPLATE_HTML = Template(r"""
             {{ ch.text | replace('\n','<br>') | safe }}
           </div>
         </div>
+
         <div class="art">
-          {% if ch.hero_src %}<img src="{{ ch.hero_src }}">{% endif %}
+          {% if ch.hero_src %}
+            {% if image_style == 'blob' %}
+              <!-- Blob-masked image via SVG -->
+              <div class="blob-wrap">
+                <svg class="blob-svg" viewBox="0 0 1000 1000" preserveAspectRatio="xMidYMid slice">
+                  <defs>
+                    <clipPath id="blob-{{ loop.index }}">
+                      <!-- more detailed blob path at 1000x1000 -->
+                      <path d="M145,281 C221,93 407,13 598,39 C744,59 889,161 949,306
+                               C1007,447 988,624 894,752 C793,889 611,969 430,953
+                               C248,935 95,822 38,673 C-16,535 60,450 145,281 Z"/>
+                    </clipPath>
+                  </defs>
+                  <image x="0" y="0" width="1000" height="1000"
+                         xlink:href="{{ ch.hero_src }}"
+                         clip-path="url(#blob-{{ loop.index }})"
+                         preserveAspectRatio="xMidYMid slice" />
+                </svg>
+              </div>
+            {% else %}
+              <img src="{{ ch.hero_src }}">
+            {% endif %}
+          {% endif %}
         </div>
       {% else %}
         <div class="art">{% if ch.hero_src %}<img src="{{ ch.hero_src }}">{% endif %}</div>
@@ -315,9 +351,7 @@ def _gen_image_to_file(prompt: str, aspect: str, dest_stem: Path) -> Path:
     try:
         if client is None or not OPENAI_IMAGE_MODEL:
             raise RuntimeError("Images API not configured")
-        resp = client.images.generate(
-            model=OPENAI_IMAGE_MODEL, prompt=prompt, size=_img_size(aspect), quality="high"
-        )
+        resp = client.images.generate(model=OPENAI_IMAGE_MODEL, prompt=prompt, size=_img_size(aspect), quality="high")
         b64 = getattr(resp.data[0], "b64_json", None)
         if not isinstance(b64, str) or not b64.strip():
             raise ValueError("No b64_json in image response")
@@ -334,7 +368,6 @@ def _require_client():
     if client is None:
         raise HTTPException(status_code=500, detail="OPENAI_API_KEY is not set in Railway Variables.")
 
-# --- helpers for media paths / embedding ---
 def _media_url_to_abs(media_url: str) -> Path:
     if not media_url.startswith("/media/"):
         raise HTTPException(status_code=400, detail="expected a /media/... url")
@@ -393,8 +426,7 @@ def generate_story(req: StoryRequest):
                 model=OPENAI_TEXT_MODEL, temperature=0.9,
                 messages=[
                     {"role": "system", "content":
-                        "You are a children’s author. Warm, age-appropriate prose. "
-                        "Avoid brand names and anything scary."
+                        "You are a children’s author. Warm, age-appropriate prose. Avoid brand names and anything scary."
                     },
                     {"role": "user", "content": cp},
                 ],
@@ -556,139 +588,4 @@ def _load_book_json(book_id: str) -> dict:
 
 def _save_book_json(book_id: str, data: dict) -> None:
     jf = _book_json_path(book_id)
-    jf.parent.mkdir(parents=True, exist_ok=True)
-    jf.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-class ChapterTextPatch(BaseModel):
-    chapter_index: int
-    markdown: str
-
-class ImageEditReq(BaseModel):
-    chapter_index: int
-    image_index: int
-    prompt: str
-
-@router.put("/books/{book_id}/edit-text", tags=["Books"])
-def edit_book_text(book_id: str, patch: ChapterTextPatch):
-    meta = _load_book_json(book_id)
-    pages = meta.get("pages", [])
-    if patch.chapter_index < 0 or patch.chapter_index >= len(pages):
-        raise HTTPException(status_code=400, detail="invalid chapter index")
-    pages[patch.chapter_index]["text"] = patch.markdown
-    meta["last_modified"] = int(time.time())
-    _save_book_json(book_id, meta)
-    return {"ok": True, "book_id": book_id, "chapter_index": patch.chapter_index}
-
-@router.post("/books/{book_id}/edit-image", tags=["Books"])
-def edit_book_image(book_id: str, req: ImageEditReq):
-    meta = _load_book_json(book_id)
-    pages = meta.get("pages", [])
-    if req.chapter_index < 0 or req.chapter_index >= len(pages):
-        raise HTTPException(status_code=400, detail="invalid chapter index")
-    page = pages[req.chapter_index]
-    img_urls = page.get("image_urls", [])
-    if req.image_index < 0 or req.image_index >= len(img_urls):
-        raise HTTPException(status_code=400, detail="invalid image index")
-
-    current_url = img_urls[req.image_index]
-    abs_path = _media_url_to_abs(current_url)
-    abs_path.parent.mkdir(parents=True, exist_ok=True)
-
-    tmp_stem = abs_path.parent / f"_tmp_{uuid.uuid4().hex}"
-    out_tmp = _gen_image_to_file(req.prompt.strip(), "square", tmp_stem)
-    os.replace(out_tmp, abs_path)
-
-    meta["last_modified"] = int(time.time())
-    page.setdefault("image_edits", {})
-    page["image_edits"][str(req.image_index)] = {"last_prompt": req.prompt, "ts": meta["last_modified"]}
-    _save_book_json(book_id, meta)
-
-    return {"ok": True, "book_id": book_id, "chapter_index": req.chapter_index,
-            "image_index": req.image_index, "url": current_url}
-
-# ---- NEW: chapter read/update (for the Pro Editor UI) ----
-@router.get("/books/{book_id}/chapter/{n}", tags=["Books"])
-def get_chapter(book_id: str, n: int):
-    meta = _load_book_json(book_id)
-    pages = meta.get("pages", [])
-    idx = n - 1
-    if idx < 0 or idx >= len(pages):
-        raise HTTPException(status_code=404, detail="chapter not found")
-    page = pages[idx]
-    return {"text": page.get("text", ""), "images": page.get("image_urls", [])}
-
-@router.put("/books/{book_id}/chapter/{n}", tags=["Books"])
-def put_chapter(book_id: str, n: int, patch: ChapterTextPatch):
-    meta = _load_book_json(book_id)
-    pages = meta.get("pages", [])
-    idx = n - 1
-    if idx < 0 or idx >= len(pages):
-        raise HTTPException(status_code=404, detail="chapter not found")
-    pages[idx]["text"] = patch.markdown
-    meta["last_modified"] = int(time.time())
-    _save_book_json(book_id, meta)
-    return {"ok": True, "book_id": book_id, "chapter_index": idx}
-
-# ---- KDP PDF formatter (with layout controls & vertical offset) ----
-@router.post("/books/{book_id}/format", tags=["Books"])
-def format_book(book_id: str, opts: FormatOpts):
-    jf = _book_json_path(book_id)
-    if not jf.exists():
-        raise HTTPException(status_code=404, detail="Book not found")
-    book = json.loads(jf.read_text(encoding="utf-8"))
-
-    # Page metrics
-    trim_w_in, trim_h_in = TRIMS.get(opts.trim, TRIMS["8.5x8.5"])
-    bleed_in = 0.125 if opts.bleed else 0.0
-    page_w_in = trim_w_in + (bleed_in * 2)
-    page_h_in = trim_h_in + (bleed_in * 2)
-
-    # Build chapter render data
-    chapters = []
-    for i, p in enumerate(book.get("pages", [])):
-        hero = (p.get("image_urls") or [None])[0]
-        hero_src = _media_url_to_rel(hero) if hero else ""
-        bg_src = hero_src if hero_src else ""
-
-        if opts.layout == "alt":
-            flip = (i % 2 == 1)        # alternate spreads
-            full_bleed = False
-        elif opts.layout == "right":
-            flip = False
-            full_bleed = False
-        elif opts.layout == "full_bleed":
-            flip = False
-            full_bleed = True
-        else:
-            flip = False
-            full_bleed = False
-
-        chapters.append({
-            "text": p.get("text", ""),
-            "hero_src": hero_src,
-            "bg_src": bg_src,
-            "flip": flip,
-            "full_bleed": full_bleed,
-        })
-
-    html = TEMPLATE_HTML.render(
-        chapters=chapters,
-        page_w_in=page_w_in, page_h_in=page_h_in,
-        line_height=opts.line_height,
-        font=opts.font,
-        bg_style=opts.bg_style,
-        image_scale=max(0.70, min(0.98, float(opts.image_scale or 0.92))),
-        v_align=opts.v_align if opts.v_align in ("top", "center", "bottom") else "center",
-        y_offset_in=max(0.0, float(getattr(opts, "y_offset_in", 0.0))),
-    )
-
-    out_dir = BOOKS_DIR / book_id / "exports"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    safe_title = (book.get("title") or "book").replace("/", "_").replace("\\", "_")
-    out_pdf = out_dir / f"{safe_title.replace(' ', '_')}_kdp.pdf"
-
-    # base_url resolves our relative media paths (books/<id>/chXX_imgY.png)
-    HTML(string=html, base_url=str(DATA_ROOT.resolve())).write_pdf(str(out_pdf))
-
-    rel = out_pdf.relative_to(DATA_ROOT).as_posix()
-    return {"pdf_url": f"/media/{rel}"}
+    jf.parent
