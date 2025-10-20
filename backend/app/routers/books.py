@@ -1,7 +1,6 @@
-import os, time, uuid, json, base64, re
+import os, time, uuid, json, base64, mimetypes
 from typing import List, Optional, Dict, Tuple
 from pathlib import Path
-from io import BytesIO
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field, constr
@@ -10,7 +9,6 @@ from openai import OpenAI
 # ----- NEW: formatter deps -----
 from jinja2 import Template
 from weasyprint import HTML
-from PIL import Image  # for JPEG data-URI embedding
 
 # -------- OpenAI config --------
 OPENAI_API_KEY     = os.getenv("OPENAI_API_KEY", "")
@@ -112,7 +110,7 @@ class FormatOpts(BaseModel):
     bleed: bool = False        # adds 0.125" each side
     font: str = "Literata"
     line_height: float = 1.6
-    bg_style: str = "tint"     # "blur" or "tint" (blur often ignored by PDF engines)
+    bg_style: str = "blur"     # "blur" or "tint"
 
 TRIMS: Dict[str, Tuple[float, float]] = {
     "8.5x8.5": (8.5, 8.5),
@@ -120,45 +118,7 @@ TRIMS: Dict[str, Tuple[float, float]] = {
     "7x10":    (7.0, 10.0),
 }
 
-# ====== NEW helpers for formatter ======
-def _media_url_to_abs(media_url: str) -> Path:
-    if not media_url or not media_url.startswith("/media/"):
-        raise HTTPException(status_code=400, detail="expected a /media/... url")
-    rel = media_url[len("/media/"):]  # e.g. 'books/<id>/ch01_img1.png'
-    p = DATA_ROOT / rel
-    if not p.exists():
-        raise HTTPException(status_code=404, detail=f"asset not found: {media_url}")
-    return p
-
-def _inline_img_as_jpeg_data_uri(path: Path, quality: int = 88) -> str:
-    """Open image, convert to RGB JPEG, return data: URI (reliable embedding for PDFs)."""
-    with Image.open(path) as im:
-        if im.mode not in ("RGB", "L"):
-            im = im.convert("RGB")
-        buf = BytesIO()
-        im.save(buf, format="JPEG", quality=quality, optimize=True)
-        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-    return f"data:image/jpeg;base64,{b64}"
-
-def _md_to_html_paragraphs(md: str) -> str:
-    """
-    Light markdown → HTML:
-    - removes **bold** markers
-    - splits on blank lines into <p>
-    - collapses single newlines so paragraphs aren't narrow columns
-    """
-    if not md:
-        return ""
-    t = md.replace("**", "")
-    t = t.replace("\r\n", "\n").replace("\r", "\n")
-    parts = re.split(r"\n\s*\n", t.strip())
-    html_parts = []
-    for p in parts:
-        p1 = re.sub(r"\n+", " ", p).strip()
-        if p1:
-            html_parts.append(f"<p>{p1}</p>")
-    return "".join(html_parts)
-
+# === HTML template: uses data-URIs for images (hero_src/bg_src) ===
 TEMPLATE_HTML = Template(r"""
 <!doctype html>
 <html><head>
@@ -166,26 +126,44 @@ TEMPLATE_HTML = Template(r"""
   <style>
     @page { size: {{ page_w_in }}in {{ page_h_in }}in; margin: 0; }
     :root{
-      --safe: 0.375in;
+      --safe: 0.375in; /* keep text away from trim */
       --lh: {{ line_height }};
       --font: '{{ font }}', Georgia, serif;
     }
-    body{ margin:0; font-family: var(--font); color:#222; }
-    h2{ margin: 0 0 8pt 0; font-size: 16pt; }
-    .page{ position:relative; width:{{ page_w_in }}in; height:{{ page_h_in }}in; display:grid; grid-template-columns:1fr 1fr; }
+    body{ margin:0; font-family: var(--font); }
+    .page{
+      position:relative; width:{{ page_w_in }}in; height:{{ page_h_in }}in;
+      display:grid; grid-template-columns:1fr 1fr;
+    }
+    .bg{
+      position:absolute; inset:0; background-size:cover; background-position:center;
+      {% if bg_style=='blur' %}filter: blur(18px) brightness(1.05) saturate(1.05); transform: scale(1.08);{% endif %}
+    }
+    .tint{ position:absolute; inset:0; background: {% if bg_style=='tint' %}#fbf6ef{% else %}transparent{% endif %}; opacity:.9; }
     .textbox{ position:relative; padding: var(--safe); }
-    .box{ background: {% if bg_style=='tint' %}#fbf6ef{% else %}#ffffff{% endif %}; padding:.5in; border-radius:.1in; line-height:var(--lh); font-size:12.5pt; }
+    .box{
+      background: rgba(255,255,255,.88); padding:.5in; border-radius:.1in;
+      line-height:var(--lh); font-size:12.5pt; color:#1c140e;
+    }
     .art{ display:flex; align-items:center; justify-content:center; padding: var(--safe); }
-    .art img{ max-width:100%; max-height:100%; border-radius: 6pt; }
+    .art img{ max-width:100%; max-height:100%; display:block; }
     .spacer{ page-break-after: always; }
+    h1{ font-size:18pt; margin:0 0 .2in 0; }
   </style>
 </head>
 <body>
   {% for ch in chapters %}
     <section class="page">
-      <div class="textbox"><div class="box"><h2>Chapter {{ ch.number }}</h2>{{ ch.text_html | safe }}</div></div>
+      {% if ch.bg_src %}<div class="bg" style="background-image:url('{{ ch.bg_src }}');"></div>{% endif %}
+      <div class="tint"></div>
+      <div class="textbox">
+        <div class="box">
+          <h1>Chapter {{ loop.index }}</h1>
+          {{ ch.text | replace('\n','<br>') | safe }}
+        </div>
+      </div>
       <div class="art">
-        {% if ch.hero_data %}<img src="{{ ch.hero_data | e }}">{% endif %}
+        {% if ch.hero_src %}<img src="{{ ch.hero_src }}">{% endif %}
       </div>
     </section>
     <div class="spacer"></div>
@@ -265,6 +243,34 @@ def _gen_image_to_file(prompt: str, aspect: str, dest_stem: Path) -> Path:
 def _require_client():
     if client is None:
         raise HTTPException(status_code=500, detail="OPENAI_API_KEY is not set in Railway Variables.")
+
+# --- helpers for media paths / embedding ---
+def _media_url_to_abs(media_url: str) -> Path:
+    if not media_url.startswith("/media/"):
+        raise HTTPException(status_code=400, detail="expected a /media/... url")
+    rel = media_url[len("/media/"):]  # e.g. 'books/<id>/ch01_img1.png'
+    return DATA_ROOT / rel
+
+def _media_url_to_rel(media_url: str) -> str:
+    if not media_url:
+        return ""
+    if not media_url.startswith("/media/"):
+        raise HTTPException(status_code=400, detail="expected a /media/... url")
+    return media_url[len("/media/"):]
+
+def _file_to_data_uri(p: Path) -> Optional[str]:
+    try:
+        if not p.exists():
+            return None
+        mt, _ = mimetypes.guess_type(str(p))
+        if not mt:
+            # default to png to be safe
+            mt = "image/png"
+        b = p.read_bytes()
+        return f"data:{mt};base64,{base64.b64encode(b).decode('ascii')}"
+    except Exception as e:
+        print(f"⚠️ embed failed for {p}: {e}")
+        return None
 
 # -------- Router --------
 router = APIRouter()
@@ -444,7 +450,6 @@ def debug_read_media(path: str = Query(..., description="Path relative to /media
     return {"root": str(DATA_ROOT), "path": path, "exists": True, "bytes": target.stat().st_size}
 
 # ========= INLINE EDIT + CHAPTER APIS =========
-
 def _book_dir(book_id: str) -> Path:
     return BOOKS_DIR / book_id
 
@@ -474,7 +479,6 @@ class ImageEditReq(BaseModel):
     image_index: int
     prompt: str
 
-# ---- inline text edit ----
 @router.put("/books/{book_id}/edit-text", tags=["Books"])
 def edit_book_text(book_id: str, patch: ChapterTextPatch):
     meta = _load_book_json(book_id)
@@ -486,7 +490,6 @@ def edit_book_text(book_id: str, patch: ChapterTextPatch):
     _save_book_json(book_id, meta)
     return {"ok": True, "book_id": book_id, "chapter_index": patch.chapter_index}
 
-# ---- inline image edit ----
 @router.post("/books/{book_id}/edit-image", tags=["Books"])
 def edit_book_image(book_id: str, req: ImageEditReq):
     meta = _load_book_json(book_id)
@@ -537,7 +540,7 @@ def put_chapter(book_id: str, n: int, patch: ChapterTextPatch):
     _save_book_json(book_id, meta)
     return {"ok": True, "book_id": book_id, "chapter_index": idx}
 
-# ---- NEW: KDP PDF formatter (embeds images as data URIs) ----
+# ---- KDP PDF formatter (now with embedded images) ----
 @router.post("/books/{book_id}/format", tags=["Books"])
 def format_book(book_id: str, opts: FormatOpts):
     jf = _book_json_path(book_id)
@@ -546,29 +549,25 @@ def format_book(book_id: str, opts: FormatOpts):
     book = json.loads(jf.read_text(encoding="utf-8"))
 
     trim_w_in, trim_h_in = TRIMS.get(opts.trim, TRIMS["8.5x8.5"])
-    bleed_in  = 0.125 if opts.bleed else 0.0
+    bleed_in = 0.125 if opts.bleed else 0.0
     page_w_in = trim_w_in + (bleed_in * 2)
     page_h_in = trim_h_in + (bleed_in * 2)
 
     chapters = []
     for p in book.get("pages", []):
         hero_url = (p.get("image_urls") or [None])[0]
-        hero_data = ""
-        if hero_url:
-            try:
-                hero_data = _inline_img_as_jpeg_data_uri(_media_url_to_abs(hero_url))
-            except Exception as e:
-                print(f"⚠️ image embed failed: {e}")
-        chapters.append({
-            "number": int(p.get("chapter_index", 0)) + 1,
-            "text_html": _md_to_html_paragraphs(p.get("text", "")),
-            "hero_data": hero_data,
-        })
+        hero_rel = _media_url_to_rel(hero_url) if hero_url else ""
+        hero_abs = (DATA_ROOT / hero_rel) if hero_rel else None
+
+        # Embed as data URI (bulletproof for WeasyPrint)
+        hero_src = _file_to_data_uri(hero_abs) if hero_abs else None
+        bg_src   = hero_src  # same image for the blurred background
+
+        chapters.append({"text": p.get("text", ""), "hero_src": hero_src, "bg_src": bg_src})
 
     html = TEMPLATE_HTML.render(
         chapters=chapters,
-        page_w_in=page_w_in,
-        page_h_in=page_h_in,
+        page_w_in=page_w_in, page_h_in=page_h_in,
         line_height=opts.line_height,
         font=opts.font,
         bg_style=opts.bg_style,
@@ -579,7 +578,7 @@ def format_book(book_id: str, opts: FormatOpts):
     safe_title = (book.get("title") or "book").replace("/", "_").replace("\\", "_")
     out_pdf = out_dir / f"{safe_title.replace(' ', '_')}_kdp.pdf"
 
-    # Images are inlined; base_url is just for any potential relative assets.
+    # base_url still set (not strictly needed now that images are embedded)
     HTML(string=html, base_url=str(DATA_ROOT.resolve())).write_pdf(str(out_pdf))
 
     rel = out_pdf.relative_to(DATA_ROOT).as_posix()
