@@ -106,11 +106,22 @@ class BookListItem(BaseModel):
 
 # ----- NEW: formatter options -----
 class FormatOpts(BaseModel):
-    trim: str = "8.5x8.5"      # "8x10", "7x10" also supported
-    bleed: bool = False        # adds 0.125" each side
+    # Trim sizes supported
+    trim: str = "8.5x8.5"            # "8x10", "7x10" also supported
+    bleed: bool = False              # adds 0.125" each side
+
+    # Typography
     font: str = "Literata"
     line_height: float = 1.6
-    bg_style: str = "blur"     # "blur" or "tint"
+
+    # Background treatment behind the text
+    bg_style: str = "blur"           # "blur" | "tint" | "none"
+
+    # NEW: Layout controls
+    layout: str = "alt"              # "right" | "alt" | "full_bleed"
+    image_scale: float = 0.92        # 0.70–0.98 (relative to column height)
+    v_align: str = "center"          # "top" | "center" | "bottom"
+
 
 TRIMS: Dict[str, Tuple[float, float]] = {
     "8.5x8.5": (8.5, 8.5),
@@ -118,65 +129,98 @@ TRIMS: Dict[str, Tuple[float, float]] = {
     "7x10":    (7.0, 10.0),
 }
 
-# === HTML template: top-aligned art, predictable sizing ===
 TEMPLATE_HTML = Template(r"""
 <!doctype html>
-<html><head>
+<html>
+<head>
   <meta charset="utf-8">
   <style>
     @page { size: {{ page_w_in }}in {{ page_h_in }}in; margin: 0; }
     :root{
-      --safe: 0.375in;               /* keep content away from trim */
+      --safe: 0.375in;                          /* inner safety from trim */
       --lh: {{ line_height }};
       --font: '{{ font }}', Georgia, serif;
+      --imgScale: {{ image_scale }};
     }
-    body{ margin:0; font-family: var(--font); color:#1c140e; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: var(--font); color:#1b1510; }
 
-    /* Spread */
+    /* Spread grid */
     .page{
       position:relative;
       width:{{ page_w_in }}in; height:{{ page_h_in }}in;
-      display:grid;
-      grid-template-columns: 1fr 1fr;
-      align-items: start;            /* <- keep both columns aligned to top */
+      display:grid; grid-template-columns: 1fr 1fr;
+      align-items: start;
     }
+    .page.flip .textbox { grid-column: 2; }
+    .page.flip .art     { grid-column: 1; }
 
-    /* Background */
+    /* Background wash */
     .bg{
       position:absolute; inset:0; background-size:cover; background-position:center;
-      {% if bg_style=='blur' %}filter: blur(18px) brightness(1.05) saturate(1.05); transform: scale(1.08);{% endif %}
+      {% if bg_style == 'blur' %}filter: blur(18px) brightness(1.05) saturate(1.05); transform: scale(1.08);{% endif %}
     }
-    .tint{ position:absolute; inset:0; background: {% if bg_style=='tint' %}#fbf6ef{% else %}transparent{% endif %}; opacity:.9; }
+    .tint{
+      position:absolute; inset:0;
+      background: {% if bg_style == 'tint' %}#fbf6ef{% elif bg_style == 'none' %}transparent{% else %}transparent{% endif %};
+      opacity: {% if bg_style == 'tint' %}.92{% else %}1{% endif %};
+    }
 
-    /* Left column (text) */
-    .textbox{ position:relative; padding: var(--safe); }
+    /* Text column */
+    .textbox { position:relative; padding: var(--safe); }
     .box{
-      background: rgba(255,255,255,.90);
-      padding:.5in;
-      border-radius:.1in;
+      background: rgba(255,255,255,.92);
+      padding:.50in;
+      border-radius:.10in;
       line-height:var(--lh);
       font-size:12.5pt;
       box-shadow: 0 0.03in 0.08in rgba(0,0,0,.08);
     }
     h1{ font-size:18pt; margin:0 0 .15in 0; }
 
-    /* Right column (art) */
+    /* Art column */
     .art{
       position:relative;
       padding: var(--safe);
       display:flex;
-      align-items:flex-start;        /* <- TOP align the image */
       justify-content:center;
+      {% if v_align == 'top' %}align-items:flex-start;
+      {% elif v_align == 'bottom' %}align-items:flex-end;
+      {% else %}align-items:center;{% endif %}
     }
     .art img{
       display:block;
       width: 100%;
       height: auto;
-      max-height: calc(100% - var(--safe)*2);  /* <- prevent drifting down */
-      object-fit: contain;                      /* maintain aspect ratio */
+      max-height: calc((100% - var(--safe)*2) * var(--imgScale));
+      object-fit: contain;
       border-radius:.08in;
-      box-shadow: 0 0.03in 0.08in rgba(0,0,0,.08);
       background:#fff;
+      box-shadow: 0 0.03in 0.08in rgba(0,0,0,.08);
+    }
+
+    /* Full-bleed variant */
+    .page.full{
+      grid-template-columns: 1fr;
+    }
+    .page.full .art{
+      padding:0;
+      align-items:stretch; justify-content:stretch;
+    }
+    .page.full .art img{
+      width:100%; height:100%;
+      max-height: none;
+      object-fit: cover;                /* true edge-to-edge */
+      border-radius: 0;
+      box-shadow: none;
+    }
+    .page.full .textbox{
+      position:absolute; left: var(--safe); top: var(--safe);
+      width: calc(50% - var(--safe)); max-width: 60%;
+      padding:0;
+    }
+    .page.full .box{
+      background: rgba(255,255,255,.90);
     }
 
     .spacer{ page-break-after: always; }
@@ -184,26 +228,36 @@ TEMPLATE_HTML = Template(r"""
 </head>
 <body>
   {% for ch in chapters %}
-    <section class="page">
+    <section class="page{% if ch.flip %} flip{% endif %}{% if ch.full_bleed %} full{% endif %}">
       {% if ch.bg_src %}<div class="bg" style="background-image:url('{{ ch.bg_src }}');"></div>{% endif %}
       <div class="tint"></div>
 
-      <div class="textbox">
-        <div class="box">
-          <h1>Chapter {{ loop.index }}</h1>
-          {{ ch.text | replace('\n','<br>') | safe }}
+      {% if not ch.full_bleed %}
+        <div class="textbox">
+          <div class="box">
+            <h1>Chapter {{ loop.index }}</h1>
+            {{ ch.text | replace('\n','<br>') | safe }}
+          </div>
         </div>
-      </div>
-
-      <div class="art">
-        {% if ch.hero_src %}<img src="{{ ch.hero_src }}">{% endif %}
-      </div>
+        <div class="art">
+          {% if ch.hero_src %}<img src="{{ ch.hero_src }}">{% endif %}
+        </div>
+      {% else %}
+        <div class="art">{% if ch.hero_src %}<img src="{{ ch.hero_src }}">{% endif %}</div>
+        <div class="textbox">
+          <div class="box">
+            <h1>Chapter {{ loop.index }}</h1>
+            {{ ch.text | replace('\n','<br>') | safe }}
+          </div>
+        </div>
+      {% endif %}
     </section>
     <div class="spacer"></div>
   {% endfor %}
 </body>
 </html>
 """)
+
 
 # --------- helpers ---------
 def _title_from_prompt(prompt: str, age: str) -> str:
@@ -581,22 +635,39 @@ def format_book(book_id: str, opts: FormatOpts):
         raise HTTPException(status_code=404, detail="Book not found")
     book = json.loads(jf.read_text(encoding="utf-8"))
 
+    # Page metrics
     trim_w_in, trim_h_in = TRIMS.get(opts.trim, TRIMS["8.5x8.5"])
     bleed_in = 0.125 if opts.bleed else 0.0
     page_w_in = trim_w_in + (bleed_in * 2)
     page_h_in = trim_h_in + (bleed_in * 2)
 
+    # Build chapter render data
     chapters = []
-    for p in book.get("pages", []):
-        hero_url = (p.get("image_urls") or [None])[0]
-        hero_rel = _media_url_to_rel(hero_url) if hero_url else ""
-        hero_abs = (DATA_ROOT / hero_rel) if hero_rel else None
+    for i, p in enumerate(book.get("pages", [])):
+        hero = (p.get("image_urls") or [None])[0]
+        hero_src = _media_url_to_rel(hero) if hero else ""
+        bg_src = hero_src if hero_src else ""
 
-        # Embed as data URI (bulletproof for WeasyPrint)
-        hero_src = _file_to_data_uri(hero_abs) if hero_abs else None
-        bg_src   = hero_src  # same image for the blurred background
+        if opts.layout == "alt":
+            flip = (i % 2 == 1)        # even index -> image left, text right
+            full_bleed = False
+        elif opts.layout == "right":
+            flip = False
+            full_bleed = False
+        elif opts.layout == "full_bleed":
+            flip = False
+            full_bleed = True
+        else:  # fallback
+            flip = False
+            full_bleed = False
 
-        chapters.append({"text": p.get("text", ""), "hero_src": hero_src, "bg_src": bg_src})
+        chapters.append({
+            "text": p.get("text", ""),
+            "hero_src": hero_src,
+            "bg_src": bg_src,
+            "flip": flip,
+            "full_bleed": full_bleed,
+        })
 
     html = TEMPLATE_HTML.render(
         chapters=chapters,
@@ -604,6 +675,8 @@ def format_book(book_id: str, opts: FormatOpts):
         line_height=opts.line_height,
         font=opts.font,
         bg_style=opts.bg_style,
+        image_scale=max(0.70, min(0.98, float(opts.image_scale or 0.92))),
+        v_align=opts.v_align if opts.v_align in ("top", "center", "bottom") else "center",
     )
 
     out_dir = BOOKS_DIR / book_id / "exports"
@@ -611,7 +684,7 @@ def format_book(book_id: str, opts: FormatOpts):
     safe_title = (book.get("title") or "book").replace("/", "_").replace("\\", "_")
     out_pdf = out_dir / f"{safe_title.replace(' ', '_')}_kdp.pdf"
 
-    # base_url still set (not strictly needed now that images are embedded)
+    # base_url resolves our relative media paths (books/<id>/chXX_imgY.png)
     HTML(string=html, base_url=str(DATA_ROOT.resolve())).write_pdf(str(out_pdf))
 
     rel = out_pdf.relative_to(DATA_ROOT).as_posix()
