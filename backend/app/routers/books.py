@@ -658,3 +658,101 @@ def format_book(book_id: str, opts: FormatOpts):
 
     rel = out_pdf.relative_to(DATA_ROOT).as_posix()
     return {"pdf_url": f"/media/{rel}"}
+
+    # ---- Reindex utilities: rebuild image_urls in book.json from files on disk --
+
+def _find_chapter_images(book_dir: Path, ch_num: int) -> List[str]:
+    """
+    Return sorted media URLs for images that exist for a chapter.
+    Looks for files like ch01_img1.png / .jpg / .jpeg / .webp / .svg
+    """
+    hits: List[str] = []
+    # accept png, jpg, jpeg, webp, svg
+    patterns = [f"ch{ch_num:02d}_img*{ext}" for ext in (".png", ".jpg", ".jpeg", ".webp", ".svg")]
+    for pat in patterns:
+        for p in sorted(book_dir.glob(pat)):
+            rel = p.relative_to(DATA_ROOT).as_posix()
+            hits.append(f"/media/{rel}")
+    return hits
+
+
+@router.post("/books/{book_id}/reindex", tags=["Books"])
+def reindex_book(book_id: str):
+    """
+    Repair a single book.json by scanning the book folder for chXX_imgY.* files
+    and restoring the image_urls arrays so the Pro Editor shows thumbnails again.
+    """
+    jf = _book_json_path(book_id)
+    if not jf.exists():
+        raise HTTPException(status_code=404, detail="Book not found")
+
+    meta = json.loads(jf.read_text(encoding="utf-8"))
+    book_dir = BOOKS_DIR / book_id
+
+    # Ensure pages structure exists
+    pages = meta.get("pages") or []
+    if not isinstance(pages, list):
+        pages = []
+
+    # Determine how many chapters we should have from either pages or files
+    max_found = 0
+    for p in book_dir.glob("ch*_img*.*"):
+        try:
+            stem = p.stem  # e.g. ch01_img2
+            ch = int(stem[2:4])
+            max_found = max(max_found, ch)
+        except Exception:
+            continue
+
+    target_count = max(len(pages), max_found)
+    if target_count == 0:
+        meta["pages"] = []
+        meta["last_modified"] = int(time.time())
+        _save_book_json(book_id, meta)
+        return {"ok": True, "book_id": book_id, "chapters": [], "message": "No chapters/images found."}
+
+    # Grow pages list if needed
+    while len(pages) < target_count:
+        pages.append({"chapter_index": len(pages), "text": "", "image_urls": []})
+
+    repaired = 0
+    for i in range(target_count):
+        ch_num = i + 1
+        page = pages[i]
+        urls = page.get("image_urls") or []
+        if not urls:
+            urls = _find_chapter_images(book_dir, ch_num)
+            page["image_urls"] = urls
+            repaired += 1
+        # Always ensure text and chapter_index keys exist
+        if "text" not in page or page["text"] is None:
+            page["text"] = ""
+        page["chapter_index"] = i
+
+    meta["pages"] = pages
+    meta["last_modified"] = int(time.time())
+    _save_book_json(book_id, meta)
+
+    summary = [{"ch": i + 1, "images": len(pg.get("image_urls") or [])} for i, pg in enumerate(pages)]
+    return {"ok": True, "book_id": book_id, "repaired_chapters": repaired, "chapters": summary}
+
+
+@router.post("/books/reindex", tags=["Books"])
+def reindex_all_books():
+    """
+    Convenience endpoint: reindex every book under /data/books.
+    """
+    results = []
+    for sub in BOOKS_DIR.iterdir():
+        if not sub.is_dir():
+            continue
+        if not (sub / "book.json").exists():
+            continue
+        bid = sub.name
+        try:
+            res = reindex_book(bid)  # reuse logic above
+            results.append({"book_id": bid, "ok": True, "summary": res.get("chapters", [])})
+        except Exception as e:
+            results.append({"book_id": bid, "ok": False, "error": str(e)})
+    return {"ok": True, "results": results}
+
