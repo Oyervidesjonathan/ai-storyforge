@@ -151,7 +151,7 @@ TEMPLATE_HTML = Template(r"""
       position:relative;
       width:{{ page_w_in }}in; height:{{ page_h_in }}in;
       display:grid; grid-template-columns: 1fr 1fr;
-      align-items: start;
+      align-items: stretch;
       column-gap: 0.25in;                       /* NEW: breathing room */
     }
     .page.flip .textbox { grid-column: 2; }
@@ -194,9 +194,10 @@ TEMPLATE_HTML = Template(r"""
     .art img{
       display:block;
       width: 100%;
-      height: auto;
+      height: calc((100% - var(--safe)*2) * var(--imgScale));
       max-height: calc((100% - var(--safe)*2) * var(--imgScale));
       object-fit: contain;
+      object-position: center
       border-radius:.08in;
       background:#fff;
       box-shadow: 0 0.03in 0.08in rgba(0,0,0,.08);
