@@ -600,6 +600,40 @@ def edit_book_image(book_id: str, req: ImageEditReq):
     return {"ok": True, "book_id": book_id, "chapter_index": req.chapter_index,
             "image_index": req.image_index, "url": current_url}
 
+# ---- Chapter read/write endpoints used by the Pro Editor ----
+@router.get("/books/{book_id}/chapter/{n}", tags=["Books"])
+def get_chapter(book_id: str, n: int):
+    """
+    Return the markdown text and image URLs for chapter n (1-based).
+    Response shape is what the Pro Editor expects:
+      { "text": "...", "images": ["/media/books/<id>/ch01_img1.png", ...] }
+    """
+    meta = _load_book_json(book_id)
+    pages = meta.get("pages") or []
+    idx = n - 1
+    if idx < 0 or idx >= len(pages):
+        raise HTTPException(status_code=404, detail="chapter not found")
+    page = pages[idx]
+    return {
+        "text": page.get("text", "") or "",
+        "images": page.get("image_urls", []) or []
+    }
+
+@router.put("/books/{book_id}/chapter/{n}", tags=["Books"])
+def put_chapter(book_id: str, n: int, patch: ChapterTextPatch):
+    """
+    Save updated markdown for chapter n (1-based). Images are managed separately.
+    """
+    meta = _load_book_json(book_id)
+    pages = meta.get("pages") or []
+    idx = n - 1
+    if idx < 0 or idx >= len(pages):
+        raise HTTPException(status_code=404, detail="chapter not found")
+    pages[idx]["text"] = patch.markdown
+    meta["last_modified"] = int(time.time())
+    _save_book_json(book_id, meta)
+    return {"ok": True, "book_id": book_id, "chapter_index": idx}
+
 # ---- KDP PDF formatter ----
 @router.post("/books/{book_id}/format", tags=["Books"])
 def format_book(book_id: str, opts: FormatOpts):
@@ -659,8 +693,7 @@ def format_book(book_id: str, opts: FormatOpts):
     rel = out_pdf.relative_to(DATA_ROOT).as_posix()
     return {"pdf_url": f"/media/{rel}"}
 
-    # ---- Reindex utilities: rebuild image_urls in book.json from files on disk --
-
+# ---- Reindex utilities: rebuild image_urls in book.json from files on disk --
 def _find_chapter_images(book_dir: Path, ch_num: int) -> List[str]:
     """
     Return sorted media URLs for images that exist for a chapter.
@@ -674,7 +707,6 @@ def _find_chapter_images(book_dir: Path, ch_num: int) -> List[str]:
             rel = p.relative_to(DATA_ROOT).as_posix()
             hits.append(f"/media/{rel}")
     return hits
-
 
 @router.post("/books/{book_id}/reindex", tags=["Books"])
 def reindex_book(book_id: str):
@@ -736,7 +768,6 @@ def reindex_book(book_id: str):
     summary = [{"ch": i + 1, "images": len(pg.get("image_urls") or [])} for i, pg in enumerate(pages)]
     return {"ok": True, "book_id": book_id, "repaired_chapters": repaired, "chapters": summary}
 
-
 @router.post("/books/reindex", tags=["Books"])
 def reindex_all_books():
     """
@@ -755,4 +786,3 @@ def reindex_all_books():
         except Exception as e:
             results.append({"book_id": bid, "ok": False, "error": str(e)})
     return {"ok": True, "results": results}
-
