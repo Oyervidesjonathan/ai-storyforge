@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field, constr
 from openai import OpenAI
 
-# ----- NEW: formatter deps -----
+# ----- PDF formatter deps -----
 from jinja2 import Template
 from weasyprint import HTML
 
@@ -104,24 +104,17 @@ class BookListItem(BaseModel):
     created_at: Optional[int] = None
     pages: int
 
-# ----- NEW: formatter options -----
+# ----- formatter options -----
 class FormatOpts(BaseModel):
-    # Trim sizes supported
-    trim: str = "8.5x8.5"            # "8x10", "7x10" also supported
-    bleed: bool = False              # adds 0.125" each side
-
-    # Typography
+    trim: str = "8.5x8.5"        # "8x10", "7x10" also supported
+    bleed: bool = False          # adds 0.125" each side
     font: str = "Literata"
     line_height: float = 1.6
-
-    # Background treatment behind the text
-    bg_style: str = "blur"           # "blur" | "tint" | "none"
-
-    # Layout controls
-    layout: str = "alt"              # "right" | "alt" | "full_bleed"
-    image_scale: float = 0.92        # 0.70–0.98 (relative to column height)
-    v_align: str = "center"          # "top" | "center" | "bottom"
-    y_offset_in: float = 0.00        # NEW: push the art down by inches
+    bg_style: str = "blur"       # "blur" | "tint" | "none"
+    # Layout: "right" = text left / image right; "alt" = alternate; "full_bleed" = edge-to-edge image
+    layout: str = "right"
+    image_scale: float = 0.98    # 0.70–0.98 (relative to column height)
+    v_align: str = "center"      # "top" | "center" | "bottom"
 
 TRIMS: Dict[str, Tuple[float, float]] = {
     "8.5x8.5": (8.5, 8.5),
@@ -129,105 +122,104 @@ TRIMS: Dict[str, Tuple[float, float]] = {
     "7x10":    (7.0, 10.0),
 }
 
+# ---------- PDF TEMPLATE (robust vertical centering) ----------
 TEMPLATE_HTML = Template(r"""
 <!doctype html>
 <html>
 <head>
-  <meta charset="utf-8">
-  <style>
-    @page { size: {{ page_w_in }}in {{ page_h_in }}in; margin: 0; }
-    :root{
-      --safe: 0.375in;                          /* inner safety from trim */
-      --lh: {{ line_height }};
-      --font: '{{ font }}', Georgia, serif;
-      --imgScale: {{ image_scale }};
-      --artTop: {{ y_offset_in }}in;            /* NEW: vertical push for art */
-    }
-    * { box-sizing: border-box; }
-    body { margin:0; font-family: var(--font); color:#1b1510; }
+<meta charset="utf-8">
+<style>
+  @page { size: {{ page_w_in }}in {{ page_h_in }}in; margin: 0; }
+  :root{
+    --safe: 0.375in;                      /* inner safety from trim */
+    --lh: {{ line_height }};
+    --font: '{{ font }}', Georgia, serif;
+    --imgScale: {{ image_scale }};
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: var(--font); color:#1b1510; }
 
-    /* Spread grid */
-    .page{
-      position:relative;
-      width:{{ page_w_in }}in; height:{{ page_h_in }}in;
-      display:grid; grid-template-columns: 1fr 1fr;
-      align-items: start;
-      column-gap: 0.25in;                       /* NEW: breathing room */
-    }
-    .page.flip .textbox { grid-column: 2; }
-    .page.flip .art     { grid-column: 1; }
+  /* Spread grid */
+  .page{
+    position:relative;
+    width:{{ page_w_in }}in; height:{{ page_h_in }}in;
+    display:grid; grid-template-columns: 1fr 1fr;
+    align-items: stretch;                 /* both columns full height */
+  }
+  .page.flip .textbox { grid-column: 2; }
+  .page.flip .art     { grid-column: 1; }
 
-    /* Background wash */
-    .bg{
-      position:absolute; inset:0; background-size:cover; background-position:center;
-      {% if bg_style == 'blur' %}filter: blur(18px) brightness(1.05) saturate(1.05); transform: scale(1.08);{% endif %}
-    }
-    .tint{
-      position:absolute; inset:0;
-      background: {% if bg_style == 'tint' %}#fbf6ef{% elif bg_style == 'none' %}transparent{% else %}transparent{% endif %};
-      opacity: {% if bg_style == 'tint' %}.92{% else %}1{% endif %};
-    }
+  /* Background wash */
+  .bg{
+    position:absolute; inset:0; background-size:cover; background-position:center;
+    {% if bg_style == 'blur' %}filter: blur(18px) brightness(1.05) saturate(1.05); transform: scale(1.08);{% endif %}
+  }
+  .tint{
+    position:absolute; inset:0;
+    background: {% if bg_style == 'tint' %}#fbf6ef{% elif bg_style == 'none' %}transparent{% else %}transparent{% endif %};
+    opacity: {% if bg_style == 'tint' %}.92{% else %}1{% endif %};
+  }
 
-    /* Text column */
-    .textbox { position:relative; padding: var(--safe); }
-    .box{
-      background: rgba(255,255,255,.92);
-      padding:.50in;
-      border-radius:.10in;
-      line-height:var(--lh);
-      font-size:12.5pt;
-      box-shadow: 0 0.03in 0.08in rgba(0,0,0,.08);
-    }
-    h1{ font-size:18pt; margin:0 0 .15in 0; }
+  /* Text column */
+  .textbox { position:relative; padding: var(--safe); }
+  .box{
+    background: rgba(255,255,255,.92);
+    padding:.50in;
+    border-radius:.10in;
+    line-height:var(--lh);
+    font-size:12.5pt;
+    box-shadow: 0 0.03in 0.08in rgba(0,0,0,.08);
+    height: 100%;
+  }
+  h1{ font-size:18pt; margin:0 0 .15in 0; }
 
-    /* Art column */
-    .art{
-      position:relative;
-      padding: var(--safe);
-      padding-top: calc(var(--safe) + var(--artTop)); /* NEW: push image down */
-      display:flex;
-      justify-content:center;
-      {% if v_align == 'top' %}align-items:flex-start;
-      {% elif v_align == 'bottom' %}align-items:flex-end;
-      {% else %}align-items:center;{% endif %}
-    }
-    .art img{
-      display:block;
-      width: 100%;
-      height: auto;
-      max-height: calc((100% - var(--safe)*2) * var(--imgScale));
-      object-fit: contain;
-      border-radius:.08in;
-      background:#fff;
-      box-shadow: 0 0.03in 0.08in rgba(0,0,0,.08);
-    }
+  /* Art column (table-cell centering for WeasyPrint reliability) */
+  .art{
+    position:relative;
+    padding: var(--safe);
+    height: 100%;                           /* ensure full column height */
+  }
+  .art-frame{
+    display: table;
+    width: 100%;
+    height: calc(100% - var(--safe)*0);     /* table fills column */
+    table-layout: fixed;
+  }
+  .art-cell{
+    display: table-cell;
+    vertical-align:
+      {% if v_align == 'top' %}top{% elif v_align == 'bottom' %}bottom{% else %}middle{% endif %};
+    text-align: center;
+    padding: 0;
+  }
+  .art-img{
+    display:inline-block;
+    max-width: 100%;
+    max-height: calc(100% * var(--imgScale));
+    width: auto; height: auto;
+    object-fit: contain;
+    border-radius:.08in;
+    background:#fff;
+    box-shadow: 0 0.03in 0.08in rgba(0,0,0,.10);
+  }
 
-    /* Full-bleed variant */
-    .page.full{
-      grid-template-columns: 1fr;
-    }
-    .page.full .art{
-      padding:0;
-      align-items:stretch; justify-content:stretch;
-    }
-    .page.full .art img{
-      width:100%; height:100%;
-      max-height: none;
-      object-fit: cover;                /* true edge-to-edge */
-      border-radius: 0;
-      box-shadow: none;
-    }
-    .page.full .textbox{
-      position:absolute; left: var(--safe); top: var(--safe);
-      width: calc(50% - var(--safe)); max-width: 60%;
-      padding:0;
-    }
-    .page.full .box{
-      background: rgba(255,255,255,.90);
-    }
+  /* Full-bleed variant */
+  .page.full{ grid-template-columns: 1fr; }
+  .page.full .art{ padding:0; }
+  .page.full .art-frame, .page.full .art-cell{ height:100%; }
+  .page.full .art-img{
+    width:100%; height:100%; max-height:none; object-fit: cover;
+    border-radius:0; box-shadow:none;
+  }
+  .page.full .textbox{
+    position:absolute; left: var(--safe); top: var(--safe);
+    width: calc(50% - var(--safe)); max-width: 60%;
+    padding:0;
+  }
+  .page.full .box{ background: rgba(255,255,255,.90); }
 
-    .spacer{ page-break-after: always; }
-  </style>
+  .spacer{ page-break-after: always; }
+</style>
 </head>
 <body>
   {% for ch in chapters %}
@@ -236,23 +228,26 @@ TEMPLATE_HTML = Template(r"""
       <div class="tint"></div>
 
       {% if not ch.full_bleed %}
-        <div class="textbox">
-          <div class="box">
-            <h1>Chapter {{ loop.index }}</h1>
-            {{ ch.text | replace('\n','<br>') | safe }}
-          </div>
-        </div>
+        <div class="textbox"><div class="box">
+          <h1>Chapter {{ loop.index }}</h1>
+          {{ ch.text | replace('\n','<br>') | safe }}
+        </div></div>
+
         <div class="art">
-          {% if ch.hero_src %}<img src="{{ ch.hero_src }}">{% endif %}
+          <div class="art-frame"><div class="art-cell">
+            {% if ch.hero_src %}<img class="art-img" src="{{ ch.hero_src }}">{% endif %}
+          </div></div>
         </div>
       {% else %}
-        <div class="art">{% if ch.hero_src %}<img src="{{ ch.hero_src }}">{% endif %}</div>
-        <div class="textbox">
-          <div class="box">
-            <h1>Chapter {{ loop.index }}</h1>
-            {{ ch.text | replace('\n','<br>') | safe }}
-          </div>
+        <div class="art">
+          <div class="art-frame"><div class="art-cell">
+            {% if ch.hero_src %}<img class="art-img" src="{{ ch.hero_src }}">{% endif %}
+          </div></div>
         </div>
+        <div class="textbox"><div class="box">
+          <h1>Chapter {{ loop.index }}</h1>
+          {{ ch.text | replace('\n','<br>') | safe }}
+        </div></div>
       {% endif %}
     </section>
     <div class="spacer"></div>
@@ -605,30 +600,7 @@ def edit_book_image(book_id: str, req: ImageEditReq):
     return {"ok": True, "book_id": book_id, "chapter_index": req.chapter_index,
             "image_index": req.image_index, "url": current_url}
 
-# ---- NEW: chapter read/update (for the Pro Editor UI) ----
-@router.get("/books/{book_id}/chapter/{n}", tags=["Books"])
-def get_chapter(book_id: str, n: int):
-    meta = _load_book_json(book_id)
-    pages = meta.get("pages", [])
-    idx = n - 1
-    if idx < 0 or idx >= len(pages):
-        raise HTTPException(status_code=404, detail="chapter not found")
-    page = pages[idx]
-    return {"text": page.get("text", ""), "images": page.get("image_urls", [])}
-
-@router.put("/books/{book_id}/chapter/{n}", tags=["Books"])
-def put_chapter(book_id: str, n: int, patch: ChapterTextPatch):
-    meta = _load_book_json(book_id)
-    pages = meta.get("pages", [])
-    idx = n - 1
-    if idx < 0 or idx >= len(pages):
-        raise HTTPException(status_code=404, detail="chapter not found")
-    pages[idx]["text"] = patch.markdown
-    meta["last_modified"] = int(time.time())
-    _save_book_json(book_id, meta)
-    return {"ok": True, "book_id": book_id, "chapter_index": idx}
-
-# ---- KDP PDF formatter (with layout controls & vertical offset) ----
+# ---- KDP PDF formatter ----
 @router.post("/books/{book_id}/format", tags=["Books"])
 def format_book(book_id: str, opts: FormatOpts):
     jf = _book_json_path(book_id)
@@ -650,15 +622,12 @@ def format_book(book_id: str, opts: FormatOpts):
         bg_src = hero_src if hero_src else ""
 
         if opts.layout == "alt":
-            flip = (i % 2 == 1)        # alternate spreads
-            full_bleed = False
-        elif opts.layout == "right":
-            flip = False
+            flip = (i % 2 == 1)   # alternate sides
             full_bleed = False
         elif opts.layout == "full_bleed":
             flip = False
             full_bleed = True
-        else:
+        else:                    # "right" (default)
             flip = False
             full_bleed = False
 
@@ -676,9 +645,8 @@ def format_book(book_id: str, opts: FormatOpts):
         line_height=opts.line_height,
         font=opts.font,
         bg_style=opts.bg_style,
-        image_scale=max(0.70, min(0.98, float(opts.image_scale or 0.92))),
+        image_scale=max(0.70, min(0.98, float(opts.image_scale or 0.98))),
         v_align=opts.v_align if opts.v_align in ("top", "center", "bottom") else "center",
-        y_offset_in=max(0.0, float(getattr(opts, "y_offset_in", 0.0))),
     )
 
     out_dir = BOOKS_DIR / book_id / "exports"
@@ -686,7 +654,6 @@ def format_book(book_id: str, opts: FormatOpts):
     safe_title = (book.get("title") or "book").replace("/", "_").replace("\\", "_")
     out_pdf = out_dir / f"{safe_title.replace(' ', '_')}_kdp.pdf"
 
-    # base_url resolves our relative media paths (books/<id>/chXX_imgY.png)
     HTML(string=html, base_url=str(DATA_ROOT.resolve())).write_pdf(str(out_pdf))
 
     rel = out_pdf.relative_to(DATA_ROOT).as_posix()
