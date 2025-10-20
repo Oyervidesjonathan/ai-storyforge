@@ -118,7 +118,7 @@ TRIMS: Dict[str, Tuple[float, float]] = {
     "7x10":    (7.0, 10.0),
 }
 
-# === HTML template: uses data-URIs for images (hero_src/bg_src) ===
+# === HTML template: top-aligned art, predictable sizing ===
 TEMPLATE_HTML = Template(r"""
 <!doctype html>
 <html><head>
@@ -126,29 +126,60 @@ TEMPLATE_HTML = Template(r"""
   <style>
     @page { size: {{ page_w_in }}in {{ page_h_in }}in; margin: 0; }
     :root{
-      --safe: 0.375in; /* keep text away from trim */
+      --safe: 0.375in;               /* keep content away from trim */
       --lh: {{ line_height }};
       --font: '{{ font }}', Georgia, serif;
     }
-    body{ margin:0; font-family: var(--font); }
+    body{ margin:0; font-family: var(--font); color:#1c140e; }
+
+    /* Spread */
     .page{
-      position:relative; width:{{ page_w_in }}in; height:{{ page_h_in }}in;
-      display:grid; grid-template-columns:1fr 1fr;
+      position:relative;
+      width:{{ page_w_in }}in; height:{{ page_h_in }}in;
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      align-items: start;            /* <- keep both columns aligned to top */
     }
+
+    /* Background */
     .bg{
       position:absolute; inset:0; background-size:cover; background-position:center;
       {% if bg_style=='blur' %}filter: blur(18px) brightness(1.05) saturate(1.05); transform: scale(1.08);{% endif %}
     }
     .tint{ position:absolute; inset:0; background: {% if bg_style=='tint' %}#fbf6ef{% else %}transparent{% endif %}; opacity:.9; }
+
+    /* Left column (text) */
     .textbox{ position:relative; padding: var(--safe); }
     .box{
-      background: rgba(255,255,255,.88); padding:.5in; border-radius:.1in;
-      line-height:var(--lh); font-size:12.5pt; color:#1c140e;
+      background: rgba(255,255,255,.90);
+      padding:.5in;
+      border-radius:.1in;
+      line-height:var(--lh);
+      font-size:12.5pt;
+      box-shadow: 0 0.03in 0.08in rgba(0,0,0,.08);
     }
-    .art{ display:flex; align-items:center; justify-content:center; padding: var(--safe); }
-    .art img{ max-width:100%; max-height:100%; display:block; }
+    h1{ font-size:18pt; margin:0 0 .15in 0; }
+
+    /* Right column (art) */
+    .art{
+      position:relative;
+      padding: var(--safe);
+      display:flex;
+      align-items:flex-start;        /* <- TOP align the image */
+      justify-content:center;
+    }
+    .art img{
+      display:block;
+      width: 100%;
+      height: auto;
+      max-height: calc(100% - var(--safe)*2);  /* <- prevent drifting down */
+      object-fit: contain;                      /* maintain aspect ratio */
+      border-radius:.08in;
+      box-shadow: 0 0.03in 0.08in rgba(0,0,0,.08);
+      background:#fff;
+    }
+
     .spacer{ page-break-after: always; }
-    h1{ font-size:18pt; margin:0 0 .2in 0; }
   </style>
 </head>
 <body>
@@ -156,12 +187,14 @@ TEMPLATE_HTML = Template(r"""
     <section class="page">
       {% if ch.bg_src %}<div class="bg" style="background-image:url('{{ ch.bg_src }}');"></div>{% endif %}
       <div class="tint"></div>
+
       <div class="textbox">
         <div class="box">
           <h1>Chapter {{ loop.index }}</h1>
           {{ ch.text | replace('\n','<br>') | safe }}
         </div>
       </div>
+
       <div class="art">
         {% if ch.hero_src %}<img src="{{ ch.hero_src }}">{% endif %}
       </div>
