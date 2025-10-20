@@ -117,11 +117,11 @@ class FormatOpts(BaseModel):
     # Background treatment behind the text
     bg_style: str = "blur"           # "blur" | "tint" | "none"
 
-    # NEW: Layout controls
+    # Layout controls
     layout: str = "alt"              # "right" | "alt" | "full_bleed"
     image_scale: float = 0.92        # 0.70–0.98 (relative to column height)
     v_align: str = "center"          # "top" | "center" | "bottom"
-
+    y_offset_in: float = 0.00        # NEW: push the art down by inches
 
 TRIMS: Dict[str, Tuple[float, float]] = {
     "8.5x8.5": (8.5, 8.5),
@@ -141,6 +141,7 @@ TEMPLATE_HTML = Template(r"""
       --lh: {{ line_height }};
       --font: '{{ font }}', Georgia, serif;
       --imgScale: {{ image_scale }};
+      --artTop: {{ y_offset_in }}in;            /* NEW: vertical push for art */
     }
     * { box-sizing: border-box; }
     body { margin:0; font-family: var(--font); color:#1b1510; }
@@ -151,6 +152,7 @@ TEMPLATE_HTML = Template(r"""
       width:{{ page_w_in }}in; height:{{ page_h_in }}in;
       display:grid; grid-template-columns: 1fr 1fr;
       align-items: start;
+      column-gap: 0.25in;                       /* NEW: breathing room */
     }
     .page.flip .textbox { grid-column: 2; }
     .page.flip .art     { grid-column: 1; }
@@ -182,6 +184,7 @@ TEMPLATE_HTML = Template(r"""
     .art{
       position:relative;
       padding: var(--safe);
+      padding-top: calc(var(--safe) + var(--artTop)); /* NEW: push image down */
       display:flex;
       justify-content:center;
       {% if v_align == 'top' %}align-items:flex-start;
@@ -257,7 +260,6 @@ TEMPLATE_HTML = Template(r"""
 </body>
 </html>
 """)
-
 
 # --------- helpers ---------
 def _title_from_prompt(prompt: str, age: str) -> str:
@@ -351,7 +353,6 @@ def _file_to_data_uri(p: Path) -> Optional[str]:
             return None
         mt, _ = mimetypes.guess_type(str(p))
         if not mt:
-            # default to png to be safe
             mt = "image/png"
         b = p.read_bytes()
         return f"data:{mt};base64,{base64.b64encode(b).decode('ascii')}"
@@ -627,7 +628,7 @@ def put_chapter(book_id: str, n: int, patch: ChapterTextPatch):
     _save_book_json(book_id, meta)
     return {"ok": True, "book_id": book_id, "chapter_index": idx}
 
-# ---- KDP PDF formatter (now with embedded images) ----
+# ---- KDP PDF formatter (with layout controls & vertical offset) ----
 @router.post("/books/{book_id}/format", tags=["Books"])
 def format_book(book_id: str, opts: FormatOpts):
     jf = _book_json_path(book_id)
@@ -649,7 +650,7 @@ def format_book(book_id: str, opts: FormatOpts):
         bg_src = hero_src if hero_src else ""
 
         if opts.layout == "alt":
-            flip = (i % 2 == 1)        # even index -> image left, text right
+            flip = (i % 2 == 1)        # alternate spreads
             full_bleed = False
         elif opts.layout == "right":
             flip = False
@@ -657,7 +658,7 @@ def format_book(book_id: str, opts: FormatOpts):
         elif opts.layout == "full_bleed":
             flip = False
             full_bleed = True
-        else:  # fallback
+        else:
             flip = False
             full_bleed = False
 
@@ -677,6 +678,7 @@ def format_book(book_id: str, opts: FormatOpts):
         bg_style=opts.bg_style,
         image_scale=max(0.70, min(0.98, float(opts.image_scale or 0.92))),
         v_align=opts.v_align if opts.v_align in ("top", "center", "bottom") else "center",
+        y_offset_in=max(0.0, float(getattr(opts, "y_offset_in", 0.0))),
     )
 
     out_dir = BOOKS_DIR / book_id / "exports"
