@@ -138,105 +138,142 @@ TEMPLATE_HTML = Template(r"""
   * { box-sizing: border-box; }
   body { margin:0; font-family: var(--font); color:#1b1510; }
 
-  /* Spread container — use FLEX (reliable in WeasyPrint) */
+  /* page container uses FLEX (WeasyPrint reliable) */
   .page{
     position:relative;
     width:{{ page_w_in }}in; height:{{ page_h_in }}in;
     display:flex; flex-direction:row; align-items:stretch;
   }
-  /* two columns */
   .textbox, .art { width:50%; }
 
   /* flip (text right, image left) */
   .page.flip .textbox { order:2; }
   .page.flip .art     { order:1; }
 
-  /* Background wash */
+  /* background layer (used by overlay hue & side-extend) */
   .bg{
     position:absolute; inset:0; background-size:cover; background-position:center;
-    {% if bg_style == 'blur' %}filter: blur(18px) brightness(1.05) saturate(1.05); transform: scale(1.08);{% endif %}
   }
-  .tint{
-    position:absolute; inset:0;
-    background: {% if bg_style == 'tint' %}#fbf6ef{% elif bg_style == 'none' %}transparent{% else %}transparent{% endif %};
-    opacity: {% if bg_style == 'tint' %}.92{% else %}1{% endif %};
-  }
+  .tint{ position:absolute; inset:0; background:transparent; }
 
-  /* --- stacking order so text paints above art/background --- */
-  .bg, .tint { position:absolute; inset:0; z-index:1; }
-  .art       { position:relative;               z-index:2; }
-  .textbox   { position:relative;               z-index:3; }
-  .page.full .textbox { position:absolute; left: var(--safe); top: var(--safe); z-index:4; }
+  /* stacking: text above art/background */
+  .bg, .tint { z-index:1; }
+  .art       { position:relative; z-index:2; }
+  .textbox   { position:relative; z-index:3; }
 
-  /* Text column */
+  /* text column — NO CARDS */
   .textbox { padding: var(--safe); }
-  .box{
-    background: rgba(255,255,255,.92);
-    padding:.50in;
-    border-radius:.10in;
+  .copy{
     line-height:var(--lh);
     font-size:12.5pt;
-    box-shadow: 0 0.03in 0.08in rgba(0,0,0,.08);
-    height: 100%;
+    background: transparent;     /* ensure no box */
   }
-  h1{ font-size:18pt; margin:0 0 .15in 0; }
+  .copy h1{ font-size:18pt; margin:0 0 .15in 0; }
 
-  /* Art column (table-cell centering stays) */
+  /* subtle readability helpers (on full-bleed or busy art) */
+  .copy.soft-shadow{ text-shadow: 0 1px 2px rgba(255,255,255,.85), 0 0 18px rgba(255,255,255,.55); }
+  .copy.light-ink  { color:#f7faf8; text-shadow: 0 1px 2px rgba(0,0,0,.55), 0 0 14px rgba(0,0,0,.45); }
+
+  /* art column */
   .art{ padding: var(--safe); height: 100%; }
   .art-frame{ display: table; width: 100%; height: calc(100% - var(--safe)*0); table-layout: fixed; }
-  .art-cell{ display: table-cell; vertical-align:
-      {% if v_align == 'top' %}top{% elif v_align == 'bottom' %}bottom{% else %}middle{% endif %};
-    text-align: center; padding: 0; }
+  .art-cell{
+    display: table-cell; text-align: center; padding: 0;
+    vertical-align: {% if v_align == 'top' %}top{% elif v_align == 'bottom' %}bottom{% else %}middle{% endif %};
+  }
   .art-img{
-    display:inline-block; max-width: 100%; max-height: calc(100% * var(--imgScale));
+    display:inline-block;
+    max-width: 100%; max-height: calc(100% * var(--imgScale));
     width: auto; height: auto; object-fit: contain;
-    border-radius:.08in; background:#fff; box-shadow: 0 0.03in 0.08in rgba(0,0,0,.10);
+    border-radius:.08in;
+    /* remove any white backer */
+    background: transparent;
+    box-shadow: 0 0.03in 0.08in rgba(0,0,0,.08);
   }
 
-  /* Full-bleed variant */
-  .page.full{ display:block; }
-  .page.full .art{ padding:0; width:100%; }
-  .page.full .art-frame, .page.full .art-cell{ height:100%; }
-  .page.full .art-img{
+  /* ===== STYLE PACKS ===== */
+
+  /* 1) overlay_full: art covers the page; text sits directly on it (no box) */
+  .page.overlay_full{ display:block; }
+  .page.overlay_full .art{ padding:0; width:100%; }
+  .page.overlay_full .art-frame, .page.overlay_full .art-cell{ height:100%; }
+  .page.overlay_full .art-img{
     width:100%; height:100%; max-height:none; object-fit: cover; border-radius:0; box-shadow:none;
   }
-  .page.full .textbox{
-    left: var(--safe); top: var(--safe);
-    width: calc(50% - var(--safe)); max-width: 60%;
-    padding:0;
+  .page.overlay_full .textbox{
+    position:absolute; left: var(--safe); right: var(--safe); top: var(--safe); bottom: auto;
+    width:auto; max-width: 62%;
   }
-  .page.full .box{ background: rgba(255,255,255,.90); }
+  /* default to soft-shadow for readability */
+  .page.overlay_full .copy{ background:transparent; }
+
+  /* 2) side_extend: image on one side; blurred/tinted clone under text (no box) */
+  .page.side_extend .textbox{ position:relative; }
+  .page.side_extend .text-bg{
+    position:absolute; inset:0; z-index:0;
+    background: url('{{ ch.bg_src }}') center/cover no-repeat;
+    filter: blur(18px) brightness(1.06) saturate(1.04);
+    opacity:.78;
+  }
+  .page.side_extend .copy{ position:relative; z-index:1; }
+
+  /* 3) float_wrap: anchored image; clean text field (no box) */
+  .page.float_wrap .textbox{ width:60%; }
+  .page.float_wrap .art     { width:40%; }
 
   .spacer{ page-break-after: always; }
 </style>
 </head>
 <body>
   {% for ch in chapters %}
-    <section class="page{% if ch.flip %} flip{% endif %}{% if ch.full_bleed %} full{% endif %}">
-      {% if ch.bg_src %}<div class="bg" style="background-image:url('{{ ch.bg_src }}');"></div>{% endif %}
+    <section class="page
+      {% if style_pack == 'overlay_full' %} overlay_full{% endif %}
+      {% if style_pack == 'side_extend' %} side_extend{% endif %}
+      {% if style_pack == 'float_wrap' %} float_wrap{% endif %}
+      {% if ch.flip %} flip{% endif %}">
+      
+      {% if style_pack != 'float_wrap' and ch.bg_src %}<div class="bg" style="background-image:url('{{ ch.bg_src }}');"></div>{% endif %}
       <div class="tint"></div>
 
-      {% if not ch.full_bleed %}
-        <div class="textbox"><div class="box">
-          <h1>Chapter {{ loop.index }}</h1>
-          {{ ch.text | replace('\n','<br>') | safe }}
-        </div></div>
+      {% if style_pack == 'overlay_full' %}
+        <div class="art">
+          <div class="art-frame"><div class="art-cell">
+            {% if ch.hero_src %}<img class="art-img" src="{{ ch.hero_src }}">{% endif %}
+          </div></div>
+        </div>
+        <div class="textbox">
+          <div class="copy soft-shadow">
+            <h1>Chapter {{ loop.index }}</h1>
+            {{ ch.text | replace('\n','<br>') | safe }}
+          </div>
+        </div>
 
+      {% elif style_pack == 'side_extend' %}
+        <div class="textbox">
+          <div class="text-bg"></div>
+          <div class="copy">
+            <h1>Chapter {{ loop.index }}</h1>
+            {{ ch.text | replace('\n','<br>') | safe }}
+          </div>
+        </div>
         <div class="art">
           <div class="art-frame"><div class="art-cell">
             {% if ch.hero_src %}<img class="art-img" src="{{ ch.hero_src }}">{% endif %}
           </div></div>
         </div>
-      {% else %}
+
+      {% else %} {# float_wrap #}
+        <div class="textbox">
+          <div class="copy">
+            <h1>Chapter {{ loop.index }}</h1>
+            {{ ch.text | replace('\n','<br>') | safe }}
+          </div>
+        </div>
         <div class="art">
           <div class="art-frame"><div class="art-cell">
             {% if ch.hero_src %}<img class="art-img" src="{{ ch.hero_src }}">{% endif %}
           </div></div>
         </div>
-        <div class="textbox"><div class="box">
-          <h1>Chapter {{ loop.index }}</h1>
-          {{ ch.text | replace('\n','<br>') | safe }}
-        </div></div>
       {% endif %}
     </section>
     <div class="spacer"></div>
@@ -244,6 +281,7 @@ TEMPLATE_HTML = Template(r"""
 </body>
 </html>
 """)
+
 
 
 
