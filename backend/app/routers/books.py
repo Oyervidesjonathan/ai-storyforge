@@ -609,23 +609,51 @@ def edit_book_image(book_id: str, req: ImageEditReq):
     pages = meta.get("pages", [])
     if req.chapter_index < 0 or req.chapter_index >= len(pages):
         raise HTTPException(status_code=400, detail="invalid chapter index")
+
     page = pages[req.chapter_index]
     img_urls = page.get("image_urls", [])
     if req.image_index < 0 or req.image_index >= len(img_urls):
         raise HTTPException(status_code=400, detail="invalid image index")
+
+    # --- NEW: build contextual prompt ---
+    book_title = meta.get("title", "children's story")
+    chapter_text = page.get("text", "")
+    style_hint = meta.get("style", "soft watercolor, cozy, storybook illustration")
+    edit_prompt = (
+        f"Children’s picture book illustration for '{book_title}'. "
+        f"This scene: {chapter_text[:240]}. "
+        f"Apply this change: {req.prompt.strip()}. "
+        f"Keep style consistent ({style_hint}). No new characters unless described."
+    )
 
     current_url = img_urls[req.image_index]
     abs_path = _media_url_to_abs(current_url)
     abs_path.parent.mkdir(parents=True, exist_ok=True)
 
     tmp_stem = abs_path.parent / f"_tmp_{uuid.uuid4().hex}"
-    out_tmp = _gen_image_to_file(req.prompt.strip(), req.aspect, tmp_stem)
+    out_tmp = _gen_image_to_file(edit_prompt, req.aspect, tmp_stem)
     os.replace(out_tmp, abs_path)
 
+    # Update metadata
     meta["last_modified"] = int(time.time())
     page.setdefault("image_edits", {})
-    page["image_edits"][str(req.image_index)] = {"last_prompt": req.prompt, "ts": meta["last_modified"]}
+    page["image_edits"][str(req.image_index)] = {
+        "last_prompt": req.prompt,
+        "context_prompt": edit_prompt,
+        "ts": meta["last_modified"],
+    }
     _save_book_json(book_id, meta)
+
+    # --- NEW: return new timestamped URL for live preview update ---
+    new_url = f"{current_url}?t={int(time.time())}"
+    return {
+        "ok": True,
+        "book_id": book_id,
+        "chapter_index": req.chapter_index,
+        "image_index": req.image_index,
+        "url": new_url,
+    }
+
 
     return {"ok": True, "book_id": book_id, "chapter_index": req.chapter_index,
             "image_index": req.image_index, "url": current_url}
