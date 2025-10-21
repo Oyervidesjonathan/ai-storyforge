@@ -90,6 +90,7 @@ class Page(BaseModel):
 class BookComposeRequest(BaseModel):
     story: StoryRequest
     images_per_chapter: int = Field(2, ge=1, le=3)
+    aspect: constr(strip_whitespace=True) = Field("square", description="square|portrait|landscape")
 
 class BookComposeResponse(BaseModel):
     id: str
@@ -436,7 +437,7 @@ def compose_book(req: BookComposeRequest):
         urls: List[str] = []
         for j in range(1, req.images_per_chapter + 1):
             pmt = _image_prompt(s.title, ch_text, req.story.style, f"Panel {j} of {req.images_per_chapter}.")
-            out = _gen_image_to_file(pmt, "square", book_dir / f"ch{idx:02d}_img{j}")
+            out = _gen_image_to_file(pmt, req.aspect, book_dir / f"ch{idx:02d}_img{j}")
             rel = out.relative_to(DATA_ROOT).as_posix()
             url = f"/media/{rel}"
             urls.append(url)
@@ -589,7 +590,7 @@ def edit_book_image(book_id: str, req: ImageEditReq):
     abs_path.parent.mkdir(parents=True, exist_ok=True)
 
     tmp_stem = abs_path.parent / f"_tmp_{uuid.uuid4().hex}"
-    out_tmp = _gen_image_to_file(req.prompt.strip(), "square", tmp_stem)
+    out_tmp = _gen_image_to_file(req.prompt.strip(), req.aspect, tmp_stem)
     os.replace(out_tmp, abs_path)
 
     meta["last_modified"] = int(time.time())
