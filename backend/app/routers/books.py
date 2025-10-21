@@ -23,9 +23,11 @@ else:
     client = OpenAI(api_key=OPENAI_API_KEY, organization=(OPENAI_ORG_ID or None))
 
 # -------- Storage / media root --------
-DATA_ROOT = Path(os.getenv("MEDIA_ROOT") or "/data")  # one source of truth
-DATA_ROOT.mkdir(parents=True, exist_ok=True)          # ensures dir exists (same path for all services)
-print(f"[boot] MEDIA_ROOT -> {DATA_ROOT.resolve()}")  # helpful in Railway logs
+DEFAULT_MEDIA = Path(__file__).resolve().parents[1] / "data"
+DATA_ROOT = Path(os.getenv("MEDIA_ROOT", "/data"))
+if not DATA_ROOT.exists():
+    DATA_ROOT = DEFAULT_MEDIA
+DATA_ROOT.mkdir(parents=True, exist_ok=True)
 
 BOOKS_DIR = DATA_ROOT / "books"
 BOOKS_DIR.mkdir(parents=True, exist_ok=True)
@@ -88,7 +90,6 @@ class Page(BaseModel):
 class BookComposeRequest(BaseModel):
     story: StoryRequest
     images_per_chapter: int = Field(2, ge=1, le=3)
-    aspect: constr(strip_whitespace=True) = Field("square", description="square|portrait|landscape")
 
 class BookComposeResponse(BaseModel):
     id: str
@@ -435,7 +436,7 @@ def compose_book(req: BookComposeRequest):
         urls: List[str] = []
         for j in range(1, req.images_per_chapter + 1):
             pmt = _image_prompt(s.title, ch_text, req.story.style, f"Panel {j} of {req.images_per_chapter}.")
-            out = _gen_image_to_file(pmt, req.aspect, book_dir / f"ch{idx:02d}_img{j}")
+            out = _gen_image_to_file(pmt, "square", book_dir / f"ch{idx:02d}_img{j}")
             rel = out.relative_to(DATA_ROOT).as_posix()
             url = f"/media/{rel}"
             urls.append(url)
@@ -560,7 +561,6 @@ class ImageEditReq(BaseModel):
     chapter_index: int
     image_index: int
     prompt: str
-    aspect: str = "square"
 
 @router.put("/books/{book_id}/edit-text", tags=["Books"])
 def edit_book_text(book_id: str, patch: ChapterTextPatch):
@@ -589,7 +589,7 @@ def edit_book_image(book_id: str, req: ImageEditReq):
     abs_path.parent.mkdir(parents=True, exist_ok=True)
 
     tmp_stem = abs_path.parent / f"_tmp_{uuid.uuid4().hex}"
-    out_tmp = _gen_image_to_file(req.prompt.strip(), req.aspect, tmp_stem)
+    out_tmp = _gen_image_to_file(req.prompt.strip(), "square", tmp_stem)
     os.replace(out_tmp, abs_path)
 
     meta["last_modified"] = int(time.time())
@@ -640,14 +640,7 @@ def format_book(book_id: str, opts: FormatOpts):
     jf = _book_json_path(book_id)
     if not jf.exists():
         raise HTTPException(status_code=404, detail="Book not found")
-
-    # Load book data
     book = json.loads(jf.read_text(encoding="utf-8"))
-
-    # 🔧 Auto-repair empty or missing pages
-    if not (book.get("pages") or []):
-        reindex_book(book_id)
-        book = json.loads(jf.read_text(encoding="utf-8"))
 
     # Page metrics
     trim_w_in, trim_h_in = TRIMS.get(opts.trim, TRIMS["8.5x8.5"])
@@ -679,11 +672,6 @@ def format_book(book_id: str, opts: FormatOpts):
             "flip": flip,
             "full_bleed": full_bleed,
         })
-
-    # ❗ fail loud instead of producing a blank PDF
-    print(f"[format] book_id={book_id} chapters={len(chapters)} root={DATA_ROOT}")
-    if not chapters:
-        raise HTTPException(status_code=400, detail="No chapters/pages to format. Check book.json or run /books/{id}/reindex.")
 
     html = TEMPLATE_HTML.render(
         chapters=chapters,
