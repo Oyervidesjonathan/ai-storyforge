@@ -137,9 +137,8 @@ TEMPLATE_HTML = Template(r"""
     --imgScale: {{ image_scale }};
   }
   * { box-sizing: border-box; }
-  body { margin:0; font-family: var(--font); color:#1b1510; }
+  body { margin:0; font-family: var(--font); color:#111; }
 
-  /* page container uses FLEX (WeasyPrint reliable) */
   .page{
     position:relative;
     width:{{ page_w_in }}in; height:{{ page_h_in }}in;
@@ -147,30 +146,27 @@ TEMPLATE_HTML = Template(r"""
   }
   .textbox, .art { width:50%; }
 
-  /* flip (text right, image left) */
   .page.flip .textbox { order:2; }
   .page.flip .art     { order:1; }
 
-  /* background layer (used by side-extend only) */
   .bg{ position:absolute; inset:0; background-size:cover; background-position:center; }
   .tint{ position:absolute; inset:0; background:transparent; }
 
-  /* stacking: text above art/background */
   .bg, .tint { z-index:1; }
   .art       { position:relative; z-index:2; }
   .textbox   { position:relative; z-index:3; }
 
-  /* text column — NO CARDS OR SHADOWS */
   .textbox { padding: var(--safe); }
   .copy{
     line-height:var(--lh);
     font-size:12.5pt;
     background: transparent;
-    text-shadow: none !important;   /* <- kill glow to avoid banding */
+    text-shadow:none !important;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
   }
   .copy h1{ font-size:18pt; margin:0 0 .15in 0; }
 
-  /* art column */
   .art{ padding: var(--safe); height: 100%; }
   .art-frame{ display: table; width: 100%; height: calc(100% - var(--safe)*0); table-layout: fixed; }
   .art-cell{
@@ -187,7 +183,8 @@ TEMPLATE_HTML = Template(r"""
 
   /* ===== STYLE PACKS ===== */
 
-  /* 1) overlay_full: art covers the page; text sits directly on it (no box, no glow) */
+  /* 1) overlay_full: art covers the page; text directly on it (no box)
+     — use blend mode to avoid per-line banding */
   .page.overlay_full{ display:block; }
   .page.overlay_full .art{ padding:0; width:100%; }
   .page.overlay_full .art-frame, .page.overlay_full .art-cell{ height:100%; }
@@ -198,12 +195,16 @@ TEMPLATE_HTML = Template(r"""
     position:absolute; left: var(--safe); right: var(--safe); top: var(--safe);
     width:auto; max-width: 62%;
   }
+  .page.overlay_full .copy{
+    mix-blend-mode: multiply;          /* ← key fix: removes white “bands” */
+    color:#0b0b0b;                      /* rich dark ink that blends naturally */
+  }
 
-  /* 2) side_extend: image on one side; blurred clone under text (no box, no glow) */
+  /* 2) side_extend: blurred clone under text (no box) */
   .page.side_extend .textbox{ position:relative; }
   .page.side_extend .copy{ position:relative; z-index:1; }
 
-  /* 3) float_wrap: anchored image; clean text field (no box, no glow) */
+  /* 3) float_wrap: anchored image; clean text field (no box) */
   .page.float_wrap .textbox{ width:60%; }
   .page.float_wrap .art     { width:40%; }
 
@@ -268,6 +269,7 @@ TEMPLATE_HTML = Template(r"""
 </body>
 </html>
 """)
+
 
 
 # --------- helpers ---------
