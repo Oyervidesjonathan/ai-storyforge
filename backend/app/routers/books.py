@@ -131,7 +131,7 @@ TEMPLATE_HTML = Template(r"""
 <style>
   @page { size: {{ page_w_in }}in {{ page_h_in }}in; margin: 0; }
   :root{
-    --safe: 0.375in;                      /* inner safety from trim */
+    --safe: 0.375in;
     --lh: {{ line_height }};
     --font: '{{ font }}', Georgia, serif;
     --imgScale: {{ image_scale }};
@@ -139,7 +139,7 @@ TEMPLATE_HTML = Template(r"""
   * { box-sizing: border-box; }
   body { margin:0; font-family: var(--font); color:#1b1510; }
 
-  /* Base page container (WeasyPrint-reliable flex) */
+  /* page container uses FLEX (WeasyPrint reliable) */
   .page{
     position:relative;
     width:{{ page_w_in }}in; height:{{ page_h_in }}in;
@@ -151,31 +151,26 @@ TEMPLATE_HTML = Template(r"""
   .page.flip .textbox { order:2; }
   .page.flip .art     { order:1; }
 
-  /* background layer (used by overlay & side-extend) */
-  .bg{
-    position:absolute; inset:0; background-size:cover; background-position:center;
-  }
+  /* background layer (used by side-extend only) */
+  .bg{ position:absolute; inset:0; background-size:cover; background-position:center; }
   .tint{ position:absolute; inset:0; background:transparent; }
 
-  /* z-index: text above art/background */
+  /* stacking: text above art/background */
   .bg, .tint { z-index:1; }
   .art       { position:relative; z-index:2; }
   .textbox   { position:relative; z-index:3; }
 
-  /* TEXT: no white box */
+  /* text column — NO CARDS OR SHADOWS */
   .textbox { padding: var(--safe); }
   .copy{
     line-height:var(--lh);
     font-size:12.5pt;
-    background: transparent;      /* ensure no card */
+    background: transparent;
+    text-shadow: none !important;   /* <- kill glow to avoid banding */
   }
   .copy h1{ font-size:18pt; margin:0 0 .15in 0; }
 
-  /* helpers to keep text readable on busy art */
-  .copy.soft-shadow{ text-shadow: 0 1px 2px rgba(255,255,255,.85), 0 0 18px rgba(255,255,255,.55); }
-  .copy.light-ink  { color:#f7faf8; text-shadow: 0 1px 2px rgba(0,0,0,.55), 0 0 14px rgba(0,0,0,.45); }
-
-  /* ART */
+  /* art column */
   .art{ padding: var(--safe); height: 100%; }
   .art-frame{ display: table; width: 100%; height: calc(100% - var(--safe)*0); table-layout: fixed; }
   .art-cell{
@@ -186,37 +181,29 @@ TEMPLATE_HTML = Template(r"""
     display:inline-block;
     max-width: 100%; max-height: calc(100% * var(--imgScale));
     width: auto; height: auto; object-fit: contain;
-    border-radius:.08in;
-    background: transparent;     /* no white backer */
+    border-radius:.08in; background: transparent;
     box-shadow: 0 0.03in 0.08in rgba(0,0,0,.08);
   }
 
-  /* ================== STYLE PACKS ================== */
+  /* ===== STYLE PACKS ===== */
 
-  /* 1) overlay_full — full-bleed image with text directly on top (no box) */
+  /* 1) overlay_full: art covers the page; text sits directly on it (no box, no glow) */
   .page.overlay_full{ display:block; }
   .page.overlay_full .art{ padding:0; width:100%; }
   .page.overlay_full .art-frame, .page.overlay_full .art-cell{ height:100%; }
   .page.overlay_full .art-img{
-    width:100%; height:100%; max-height:none; object-fit: cover;
-    border-radius:0; box-shadow:none;
+    width:100%; height:100%; max-height:none; object-fit: cover; border-radius:0; box-shadow:none;
   }
   .page.overlay_full .textbox{
     position:absolute; left: var(--safe); right: var(--safe); top: var(--safe);
     width:auto; max-width: 62%;
   }
 
-  /* 2) side_extend — image on one side; blurred clone under text (no box) */
+  /* 2) side_extend: image on one side; blurred clone under text (no box, no glow) */
   .page.side_extend .textbox{ position:relative; }
-  .page.side_extend .text-bg{
-    position:absolute; inset:0; z-index:0;
-    filter: blur(18px) brightness(1.06) saturate(1.04);
-    opacity:.78;
-    background-position:center; background-size:cover;
-  }
   .page.side_extend .copy{ position:relative; z-index:1; }
 
-  /* 3) float_wrap — anchored image, clean text column */
+  /* 3) float_wrap: anchored image; clean text field (no box, no glow) */
   .page.float_wrap .textbox{ width:60%; }
   .page.float_wrap .art     { width:40%; }
 
@@ -231,9 +218,8 @@ TEMPLATE_HTML = Template(r"""
       {% if style_pack == 'float_wrap' %} float_wrap{% endif %}
       {% if ch.flip %} flip{% endif %}">
 
-      {# Background for overlay/side-extend #}
-      {% if style_pack != 'float_wrap' and ch.bg_src %}
-        <div class="bg" style="background-image:url('{{ ch.bg_src }}');"></div>
+      {% if style_pack == 'side_extend' and ch.bg_src %}
+        <div class="bg" style="background-image:url('{{ ch.bg_src }}'); filter: blur(18px) brightness(1.06) saturate(1.04); opacity:.78;"></div>
       {% endif %}
       <div class="tint"></div>
 
@@ -244,7 +230,7 @@ TEMPLATE_HTML = Template(r"""
           </div></div>
         </div>
         <div class="textbox">
-          <div class="copy soft-shadow">
+          <div class="copy">
             <h1>Chapter {{ loop.index }}</h1>
             {{ ch.text | replace('\n','<br>') | safe }}
           </div>
@@ -252,7 +238,6 @@ TEMPLATE_HTML = Template(r"""
 
       {% elif style_pack == 'side_extend' %}
         <div class="textbox">
-          <div class="text-bg" style="background-image:url('{{ ch.bg_src }}');"></div>
           <div class="copy">
             <h1>Chapter {{ loop.index }}</h1>
             {{ ch.text | replace('\n','<br>') | safe }}
