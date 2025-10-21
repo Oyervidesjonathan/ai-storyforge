@@ -286,25 +286,31 @@ qs('#btnSave').addEventListener('click', async ()=>{
   toast(qs('#saveStatus'), r.ok ? 'Saved ✓' : 'Failed');
 });
 
-qs('#btnApply').addEventListener('click', async ()=>{
+qs('#btnApply').addEventListener('click', async ()=> {
   if (!BOOK_ID || selectedImageIdx < 0) return;
   const prompt = qs('#imgPrompt').value.trim();
   const aspect = qs('#imgAspect').value;
   if (!prompt) { alert('Enter an edit prompt first.'); return; }
   qs('#imgStatus').textContent = 'Updating…';
-  const r = await fetch(`${API}/books/${BOOK_ID}/edit-image`,{
-    method:'POST', headers:{'content-type':'application/json'},
+
+  const r = await fetch(`${API}/books/${BOOK_ID}/edit-image`, {
+    method:'POST',
+    headers:{'content-type':'application/json'},
     body: JSON.stringify({ chapter_index: CUR_CHAPTER-1, image_index: selectedImageIdx, prompt, aspect })
   });
-  if (r.ok) {
-    qs('#imgStatus').textContent = 'Updated ✓ (may take a moment)';
-    await loadChapter(CUR_CHAPTER);
+
+  const j = await r.json().catch(()=>({}));
+  if (r.ok && j.ok) {
+    // update local preview with the new URL
+    chapterImages[selectedImageIdx] = j.url;
+    renderPreview(selectedImageIdx);
+    qs('#imgStatus').textContent = 'Updated ✓';
     setTimeout(()=>qs('#imgStatus').textContent='',1500);
   } else {
-    const j = await r.json().catch(()=>({}));
     errToast(qs('#imgStatus'), `Failed: ${j.detail || r.status}`);
   }
 });
+
 
 /* ============== format modal ============== */
 qs('#btnFormat').addEventListener('click', ()=>{
