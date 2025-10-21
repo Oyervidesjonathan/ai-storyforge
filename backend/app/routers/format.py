@@ -68,7 +68,7 @@ TEMPLATE_HTML = Template(r"""
   .page.flip .textbox { order:2; }
   .page.flip .art     { order:1; }
 
-  /* background layer (used by overlay & side-extend) */
+  /* background layer (used by side-extend only) */
   .bg{ position:absolute; inset:0; background-size:cover; background-position:center; }
   .tint{ position:absolute; inset:0; background:transparent; }
 
@@ -82,7 +82,7 @@ TEMPLATE_HTML = Template(r"""
   .copy{ line-height:var(--lh); font-size:12.5pt; background: transparent; }
   .copy h1{ font-size:18pt; margin:0 0 .15in 0; }
 
-  /* subtle readability helpers */
+  /* readability helpers (used as-needed) */
   .copy.soft-shadow{ text-shadow: 0 1px 2px rgba(255,255,255,.85), 0 0 18px rgba(255,255,255,.55); }
   .copy.light-ink  { color:#f7faf8; text-shadow: 0 1px 2px rgba(0,0,0,.55), 0 0 14px rgba(0,0,0,.45); }
 
@@ -103,17 +103,20 @@ TEMPLATE_HTML = Template(r"""
 
   /* ===== STYLE PACKS ===== */
 
-  /* 1) overlay_full: art covers the page; text sits directly on it (no box) */
-  .page.overlay_full{ display:block; }
-  .page.overlay_full .art{ padding:0; width:100%; }
-  .page.overlay_full .art-frame, .page.overlay_full .art-cell{ height:100%; }
-  .page.overlay_full .art-img{
-    width:100%; height:100%; max-height:none; object-fit: cover; border-radius:0; box-shadow:none;
+  /* 1) overlay_full: art fully covers the page; text sits directly on it (no box) */
+  .page.overlay_full{ position:relative; }
+  .page.overlay_full .art{
+    position:absolute; inset:0; padding:0; width:auto; height:auto; z-index:1;
+  }
+  .page.overlay_full .art-bg{
+    position:absolute; inset:0;
+    background-position:center; background-size:cover; background-repeat:no-repeat;
   }
   .page.overlay_full .textbox{
     position:absolute; left: var(--safe); right: var(--safe); top: var(--safe);
-    width:auto; max-width: 62%;
+    width:auto; max-width: 62%; z-index:2;
   }
+  .page.overlay_full .copy{ text-shadow:0 1px 2px rgba(255,255,255,.85), 0 0 18px rgba(255,255,255,.55); }
 
   /* 2) side_extend: image on one side; blurred clone under text (no box) */
   .page.side_extend .textbox{ position:relative; }
@@ -134,19 +137,17 @@ TEMPLATE_HTML = Template(r"""
       {% if style_pack == 'float_wrap' %} float_wrap{% endif %}
       {% if ch.flip %} flip{% endif %}">
 
-      {% if style_pack != 'float_wrap' and ch.bg_src %}
+      {% if style_pack == 'side_extend' and ch.bg_src %}
         <div class="bg" style="background-image:url('{{ ch.bg_src }}');"></div>
       {% endif %}
       <div class="tint"></div>
 
       {% if style_pack == 'overlay_full' %}
         <div class="art">
-          <div class="art-frame"><div class="art-cell">
-            {% if ch.hero_src %}<img class="art-img" src="{{ ch.hero_src }}">{% endif %}
-          </div></div>
+          <div class="art-bg" style="background-image:url('{{ ch.hero_src }}');"></div>
         </div>
         <div class="textbox">
-          <div class="copy soft-shadow">
+          <div class="copy">
             <h1>Chapter {{ loop.index }}</h1>
             {{ ch.text | replace('\n','<br>') | safe }}
           </div>
@@ -154,7 +155,6 @@ TEMPLATE_HTML = Template(r"""
 
       {% elif style_pack == 'side_extend' %}
         <div class="textbox">
-          <!-- per-page blurred clone under the text -->
           {% if ch.bg_src %}
             <div style="
               position:absolute; inset:0; z-index:0;
