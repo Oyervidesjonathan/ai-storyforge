@@ -114,7 +114,7 @@ class FormatOpts(BaseModel):
     layout: str = "right"
     image_scale: float = 0.98    # 0.70–0.98 (relative to column height)
     v_align: str = "center"      # "top" | "center" | "bottom"
-    style_pack: str = "float_wrap"  # "overlay_full" | "side_extend" | "float_wrap"
+    style_pack: str = "float_wrap" # << NEW: overlay_full | side_extend | float_wrap
 
 TRIMS: Dict[str, Tuple[float, float]] = {
     "8.5x8.5": (8.5, 8.5),
@@ -131,7 +131,7 @@ TEMPLATE_HTML = Template(r"""
 <style>
   @page { size: {{ page_w_in }}in {{ page_h_in }}in; margin: 0; }
   :root{
-    --safe: 0.375in;
+    --safe: 0.375in;                      /* inner safety from trim */
     --lh: {{ line_height }};
     --font: '{{ font }}', Georgia, serif;
     --imgScale: {{ image_scale }};
@@ -139,7 +139,7 @@ TEMPLATE_HTML = Template(r"""
   * { box-sizing: border-box; }
   body { margin:0; font-family: var(--font); color:#1b1510; }
 
-  /* page container uses FLEX (WeasyPrint reliable) */
+  /* Base page container (WeasyPrint-reliable flex) */
   .page{
     position:relative;
     width:{{ page_w_in }}in; height:{{ page_h_in }}in;
@@ -152,28 +152,30 @@ TEMPLATE_HTML = Template(r"""
   .page.flip .art     { order:1; }
 
   /* background layer (used by overlay & side-extend) */
-  .bg{ position:absolute; inset:0; background-size:cover; background-position:center; }
+  .bg{
+    position:absolute; inset:0; background-size:cover; background-position:center;
+  }
   .tint{ position:absolute; inset:0; background:transparent; }
 
-  /* stacking: text above art/background */
+  /* z-index: text above art/background */
   .bg, .tint { z-index:1; }
   .art       { position:relative; z-index:2; }
   .textbox   { position:relative; z-index:3; }
 
-  /* text column — NO CARDS */
+  /* TEXT: no white box */
   .textbox { padding: var(--safe); }
   .copy{
     line-height:var(--lh);
     font-size:12.5pt;
-    background: transparent;
+    background: transparent;      /* ensure no card */
   }
   .copy h1{ font-size:18pt; margin:0 0 .15in 0; }
 
-  /* readability helpers when text is on top of art */
+  /* helpers to keep text readable on busy art */
   .copy.soft-shadow{ text-shadow: 0 1px 2px rgba(255,255,255,.85), 0 0 18px rgba(255,255,255,.55); }
   .copy.light-ink  { color:#f7faf8; text-shadow: 0 1px 2px rgba(0,0,0,.55), 0 0 14px rgba(0,0,0,.45); }
 
-  /* art column */
+  /* ART */
   .art{ padding: var(--safe); height: 100%; }
   .art-frame{ display: table; width: 100%; height: calc(100% - var(--safe)*0); table-layout: fixed; }
   .art-cell{
@@ -185,34 +187,36 @@ TEMPLATE_HTML = Template(r"""
     max-width: 100%; max-height: calc(100% * var(--imgScale));
     width: auto; height: auto; object-fit: contain;
     border-radius:.08in;
-    background: transparent;
+    background: transparent;     /* no white backer */
     box-shadow: 0 0.03in 0.08in rgba(0,0,0,.08);
   }
 
-  /* ===== STYLE PACKS ===== */
+  /* ================== STYLE PACKS ================== */
 
-  /* 1) overlay_full: art covers the page; text sits directly on it (no box) */
+  /* 1) overlay_full — full-bleed image with text directly on top (no box) */
   .page.overlay_full{ display:block; }
   .page.overlay_full .art{ padding:0; width:100%; }
   .page.overlay_full .art-frame, .page.overlay_full .art-cell{ height:100%; }
   .page.overlay_full .art-img{
-    width:100%; height:100%; max-height:none; object-fit: cover; border-radius:0; box-shadow:none;
+    width:100%; height:100%; max-height:none; object-fit: cover;
+    border-radius:0; box-shadow:none;
   }
   .page.overlay_full .textbox{
     position:absolute; left: var(--safe); right: var(--safe); top: var(--safe);
     width:auto; max-width: 62%;
   }
 
-  /* 2) side_extend: image on one side; blurred/tinted clone under text (no box) */
+  /* 2) side_extend — image on one side; blurred clone under text (no box) */
   .page.side_extend .textbox{ position:relative; }
   .page.side_extend .text-bg{
     position:absolute; inset:0; z-index:0;
     filter: blur(18px) brightness(1.06) saturate(1.04);
     opacity:.78;
+    background-position:center; background-size:cover;
   }
   .page.side_extend .copy{ position:relative; z-index:1; }
 
-  /* 3) float_wrap: anchored image; clean text field (no box) */
+  /* 3) float_wrap — anchored image, clean text column */
   .page.float_wrap .textbox{ width:60%; }
   .page.float_wrap .art     { width:40%; }
 
@@ -227,6 +231,7 @@ TEMPLATE_HTML = Template(r"""
       {% if style_pack == 'float_wrap' %} float_wrap{% endif %}
       {% if ch.flip %} flip{% endif %}">
 
+      {# Background for overlay/side-extend #}
       {% if style_pack != 'float_wrap' and ch.bg_src %}
         <div class="bg" style="background-image:url('{{ ch.bg_src }}');"></div>
       {% endif %}
@@ -718,7 +723,7 @@ def format_book(book_id: str, opts: FormatOpts):
         bg_style=opts.bg_style,
         image_scale=max(0.70, min(0.98, float(opts.image_scale or 0.98))),
         v_align=opts.v_align if opts.v_align in ("top", "center", "bottom") else "center",
-        style_pack=opts.style_pack,
+        style_pack=(opts.style_pack or "float_wrap")
     )
 
     out_dir = BOOKS_DIR / book_id / "exports"
