@@ -130,7 +130,7 @@ TEMPLATE_HTML = Template(r"""
 <style>
   @page { size: {{ page_w_in }}in {{ page_h_in }}in; margin: 0; }
   :root{
-    --safe: 0.375in;                      /* inner safety from trim */
+    --safe: 0.375in;
     --lh: {{ line_height }};
     --font: '{{ font }}', Georgia, serif;
     --imgScale: {{ image_scale }};
@@ -138,15 +138,18 @@ TEMPLATE_HTML = Template(r"""
   * { box-sizing: border-box; }
   body { margin:0; font-family: var(--font); color:#1b1510; }
 
-  /* Spread grid */
+  /* Spread container — use FLEX (reliable in WeasyPrint) */
   .page{
     position:relative;
     width:{{ page_w_in }}in; height:{{ page_h_in }}in;
-    display:grid; grid-template-columns: 1fr 1fr;
-    align-items: stretch;                 /* both columns full height */
+    display:flex; flex-direction:row; align-items:stretch;
   }
-  .page.flip .textbox { grid-column: 2; }
-  .page.flip .art     { grid-column: 1; }
+  /* two columns */
+  .textbox, .art { width:50%; }
+
+  /* flip (text right, image left) */
+  .page.flip .textbox { order:2; }
+  .page.flip .art     { order:1; }
 
   /* Background wash */
   .bg{
@@ -178,42 +181,24 @@ TEMPLATE_HTML = Template(r"""
   }
   h1{ font-size:18pt; margin:0 0 .15in 0; }
 
-  /* Art column (table-cell centering for WeasyPrint reliability) */
-  .art{
-    padding: var(--safe);
-    height: 100%;                           /* ensure full column height */
-  }
-  .art-frame{
-    display: table;
-    width: 100%;
-    height: calc(100% - var(--safe)*0);     /* table fills column */
-    table-layout: fixed;
-  }
-  .art-cell{
-    display: table-cell;
-    vertical-align:
+  /* Art column (table-cell centering stays) */
+  .art{ padding: var(--safe); height: 100%; }
+  .art-frame{ display: table; width: 100%; height: calc(100% - var(--safe)*0); table-layout: fixed; }
+  .art-cell{ display: table-cell; vertical-align:
       {% if v_align == 'top' %}top{% elif v_align == 'bottom' %}bottom{% else %}middle{% endif %};
-    text-align: center;
-    padding: 0;
-  }
+    text-align: center; padding: 0; }
   .art-img{
-    display:inline-block;
-    max-width: 100%;
-    max-height: calc(100% * var(--imgScale));
-    width: auto; height: auto;
-    object-fit: contain;
-    border-radius:.08in;
-    background:#fff;
-    box-shadow: 0 0.03in 0.08in rgba(0,0,0,.10);
+    display:inline-block; max-width: 100%; max-height: calc(100% * var(--imgScale));
+    width: auto; height: auto; object-fit: contain;
+    border-radius:.08in; background:#fff; box-shadow: 0 0.03in 0.08in rgba(0,0,0,.10);
   }
 
   /* Full-bleed variant */
-  .page.full{ grid-template-columns: 1fr; }
-  .page.full .art{ padding:0; }
+  .page.full{ display:block; }
+  .page.full .art{ padding:0; width:100%; }
   .page.full .art-frame, .page.full .art-cell{ height:100%; }
   .page.full .art-img{
-    width:100%; height:100%; max-height:none; object-fit: cover;
-    border-radius:0; box-shadow:none;
+    width:100%; height:100%; max-height:none; object-fit: cover; border-radius:0; box-shadow:none;
   }
   .page.full .textbox{
     left: var(--safe); top: var(--safe);
@@ -259,6 +244,7 @@ TEMPLATE_HTML = Template(r"""
 </body>
 </html>
 """)
+
 
 
 # --------- helpers ---------
