@@ -166,6 +166,8 @@
           <h3 style="margin:0">Format for KDP <span class="badge">PDF</span></h3>
           <button class="btn btn-alt" onclick="closeModal()">✖</button>
         </div>
+
+        <!-- UPDATED: includes Style pack select -->
         <div class="grid2">
           <div>
             <label>Trim</label>
@@ -182,6 +184,7 @@
               <option value="yes">yes</option>
             </select>
           </div>
+
           <div>
             <label>Font</label>
             <select id="optFont">
@@ -195,12 +198,13 @@
             <label>Line height</label>
             <input id="optLH" type="text" value="1.6"/>
           </div>
+
           <div>
-            <label>Background style</label>
-            <select id="optBG">
-              <option value="tint">warm tint</option>
-              <option value="blur">soft blur</option>
-              <option value="none">none</option>
+            <label>Style pack</label>
+            <select id="optStylePack">
+              <option value="overlay_full">Overlay Full-Bleed (text on image)</option>
+              <option value="side_extend">Color-Carry Side (image + extended bg)</option>
+              <option value="float_wrap">Float Wrap (anchored image)</option>
             </select>
           </div>
           <div>
@@ -211,9 +215,14 @@
               <option value="full_bleed">full-bleed image</option>
             </select>
           </div>
+
           <div>
-            <label>Image scale (0.70–0.98)</label>
-            <input id="optImgScale" type="text" value="0.98"/>
+            <label>Background style</label>
+            <select id="optBG">
+              <option value="tint">warm tint</option>
+              <option value="blur">soft blur</option>
+              <option value="none">none</option>
+            </select>
           </div>
           <div>
             <label>Image vertical align</label>
@@ -223,7 +232,13 @@
               <option value="bottom">bottom</option>
             </select>
           </div>
+
+          <div>
+            <label>Image scale (0.70–0.98)</label>
+            <input id="optImgScale" type="text" value="0.98"/>
+          </div>
         </div>
+
         <div class="row mt12">
           <button class="btn" id="btnDoFormat">Generate PDF</button>
           <span id="fmtStatus" class="muted"></span>
@@ -365,10 +380,11 @@ async function doFormat(){
     bleed: qs('#optBleed').value === 'yes',
     font: qs('#optFont').value,
     line_height: parseFloat(qs('#optLH').value) || 1.6,
-    bg_style: qs('#optBG').value,
     layout: qs('#optLayout').value,
+    style_pack: qs('#optStylePack').value,   // <<< NEW
     image_scale: parseFloat(qs('#optImgScale').value) || 0.98,
-    v_align: qs('#optVAlign').value
+    v_align: qs('#optVAlign').value,
+    bg_style: qs('#optBG').value
   };
   qs('#fmtStatus').textContent = 'Formatting…';
   const r = await fetch(`${API}/books/${BOOK_ID}/format`,{
