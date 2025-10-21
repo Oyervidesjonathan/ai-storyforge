@@ -641,7 +641,14 @@ def format_book(book_id: str, opts: FormatOpts):
     jf = _book_json_path(book_id)
     if not jf.exists():
         raise HTTPException(status_code=404, detail="Book not found")
+
+    # Load book data
     book = json.loads(jf.read_text(encoding="utf-8"))
+
+    # 🔧 Auto-repair empty or missing pages
+    if not (book.get("pages") or []):
+        reindex_book(book_id)
+        book = json.loads(jf.read_text(encoding="utf-8"))
 
     # Page metrics
     trim_w_in, trim_h_in = TRIMS.get(opts.trim, TRIMS["8.5x8.5"])
