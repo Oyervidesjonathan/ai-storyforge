@@ -23,11 +23,9 @@ else:
     client = OpenAI(api_key=OPENAI_API_KEY, organization=(OPENAI_ORG_ID or None))
 
 # -------- Storage / media root --------
-DEFAULT_MEDIA = Path(__file__).resolve().parents[1] / "data"
-DATA_ROOT = Path(os.getenv("MEDIA_ROOT", "/data"))
-if not DATA_ROOT.exists():
-    DATA_ROOT = DEFAULT_MEDIA
-DATA_ROOT.mkdir(parents=True, exist_ok=True)
+DATA_ROOT = Path(os.getenv("MEDIA_ROOT") or "/data")  # one source of truth
+DATA_ROOT.mkdir(parents=True, exist_ok=True)          # ensures dir exists (same path for all services)
+print(f"[boot] MEDIA_ROOT -> {DATA_ROOT.resolve()}")  # helpful in Railway logs
 
 BOOKS_DIR = DATA_ROOT / "books"
 BOOKS_DIR.mkdir(parents=True, exist_ok=True)
@@ -562,6 +560,7 @@ class ImageEditReq(BaseModel):
     chapter_index: int
     image_index: int
     prompt: str
+    aspect: str = "square"
 
 @router.put("/books/{book_id}/edit-text", tags=["Books"])
 def edit_book_text(book_id: str, patch: ChapterTextPatch):
@@ -680,6 +679,11 @@ def format_book(book_id: str, opts: FormatOpts):
             "flip": flip,
             "full_bleed": full_bleed,
         })
+
+    # ❗ fail loud instead of producing a blank PDF
+    print(f"[format] book_id={book_id} chapters={len(chapters)} root={DATA_ROOT}")
+    if not chapters:
+        raise HTTPException(status_code=400, detail="No chapters/pages to format. Check book.json or run /books/{id}/reindex.")
 
     html = TEMPLATE_HTML.render(
         chapters=chapters,
