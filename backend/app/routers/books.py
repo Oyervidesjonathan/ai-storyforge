@@ -159,8 +159,14 @@ TEMPLATE_HTML = Template(r"""
     opacity: {% if bg_style == 'tint' %}.92{% else %}1{% endif %};
   }
 
+  /* --- stacking order so text paints above art/background --- */
+  .bg, .tint { position:absolute; inset:0; z-index:1; }
+  .art       { position:relative;               z-index:2; }
+  .textbox   { position:relative;               z-index:3; }
+  .page.full .textbox { position:absolute; left: var(--safe); top: var(--safe); z-index:4; }
+
   /* Text column */
-  .textbox { position:relative; padding: var(--safe); }
+  .textbox { padding: var(--safe); }
   .box{
     background: rgba(255,255,255,.92);
     padding:.50in;
@@ -174,7 +180,6 @@ TEMPLATE_HTML = Template(r"""
 
   /* Art column (table-cell centering for WeasyPrint reliability) */
   .art{
-    position:relative;
     padding: var(--safe);
     height: 100%;                           /* ensure full column height */
   }
@@ -211,7 +216,7 @@ TEMPLATE_HTML = Template(r"""
     border-radius:0; box-shadow:none;
   }
   .page.full .textbox{
-    position:absolute; left: var(--safe); top: var(--safe);
+    left: var(--safe); top: var(--safe);
     width: calc(50% - var(--safe)); max-width: 60%;
     padding:0;
   }
@@ -254,6 +259,7 @@ TEMPLATE_HTML = Template(r"""
 </body>
 </html>
 """)
+
 
 # --------- helpers ---------
 def _title_from_prompt(prompt: str, age: str) -> str:
