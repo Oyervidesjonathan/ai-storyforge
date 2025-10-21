@@ -114,7 +114,7 @@ class FormatOpts(BaseModel):
     layout: str = "right"
     image_scale: float = 0.98    # 0.70–0.98 (relative to column height)
     v_align: str = "center"      # "top" | "center" | "bottom"
-    style_pack: str = "float_wrap" # << NEW: overlay_full | side_extend | float_wrap
+    style_pack: str = "overlay_full" # << NEW: overlay_full | side_extend | float_wrap
 
 TRIMS: Dict[str, Tuple[float, float]] = {
     "8.5x8.5": (8.5, 8.5),
@@ -738,8 +738,7 @@ def format_book(book_id: str, opts: FormatOpts):
         bg_style=opts.bg_style,
         image_scale=max(0.70, min(0.98, float(opts.image_scale or 0.98))),
         v_align=opts.v_align if opts.v_align in ("top", "center", "bottom") else "center",
-        style_pack=(opts.style_pack or "float_wrap")
-    )
+        style_pack: str = "overlay_full"
 
     out_dir = BOOKS_DIR / book_id / "exports"
     out_dir.mkdir(parents=True, exist_ok=True)
